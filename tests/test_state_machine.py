@@ -74,3 +74,11 @@ def test_finalize_is_terminal() -> None:
 def test_prompt_lane_mapping() -> None:
     assert prompt_lane_for_state(InterviewState.QUESTIONING) == "question_chain"
     assert prompt_lane_for_state(InterviewState.FOLLOW_UP) == "follow_up_chain"
+
+
+def test_patch_context_updates_aux_counters() -> None:
+    m = InterviewStateMachine()
+    m.apply(InterviewEvent.START_SESSION)
+    m.patch_context(consecutive_weak_rounds=2)
+    assert m.context.consecutive_weak_rounds == 2
+    assert m.context.state is InterviewState.QUESTIONING

@@ -1,13 +1,13 @@
 """Finite-state interview flow (README: initial → questioning → … → finalize).
 
-Part 2a only defines states, events, and legal transitions. Scoring-driven branches
-(②) supply concrete events such as ``EVAL_FOLLOW_UP`` vs ``EVAL_NEXT_QUESTION`` later.
+Part 2 defines the FSM (①), scoring-driven transitions (``business_layer.decision``),
+and compact memory (``business_layer.memory``).
 """
 
 from __future__ import annotations
 
 from enum import Enum
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
 
@@ -76,6 +76,11 @@ class InterviewSessionContext(BaseModel):
     state: InterviewState = InterviewState.INITIAL
     main_round_index: int = Field(0, ge=0, description="0-based index of the current main question round.")
     follow_ups_in_round: int = Field(0, ge=0, description="Follow-ups taken in the current main round.")
+    consecutive_weak_rounds: int = Field(
+        0,
+        ge=0,
+        description="Weak main rounds in a row (README ②: used for early interview termination).",
+    )
     turns_presented: int = Field(
         0,
         ge=0,
@@ -94,6 +99,12 @@ class InterviewStateMachine:
 
     @property
     def context(self) -> InterviewSessionContext:
+        return self._ctx
+
+    def patch_context(self, **updates: Any) -> InterviewSessionContext:
+        """Merge extra counters/metadata after a scoring decision without touching FSM legality."""
+
+        self._ctx = self._ctx.model_copy(update=updates)
         return self._ctx
 
     def allowed_events(self) -> list[InterviewEvent]:
