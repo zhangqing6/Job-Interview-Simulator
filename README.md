@@ -87,6 +87,12 @@
 | **Redis** | 会话与缓存，支撑多轮、多候选人 |
 | **Docker** | 一键构建与部署 |
 
+**工程层分三部分实施：**
+
+1. **工程 ① FastAPI 与 API 契约**：HTTP 服务、OpenAPI、`/interview/*` 与 `/healthz`、Pydantic 请求/响应模型、**进程内**会话存储（开发默认）；与状态机、决策、记忆、出题 Composer 串起来。  
+2. **工程 ② Redis 与异步强化**：会话外置、多实例一致读写的存储抽象；模型调用与 `BackgroundTasks` 等异步编排（在 ① 的接口契约上替换实现）。  
+3. **工程 ③ 可部署与可观测**：Docker / Compose、结构化日志（如 JSON Lines）、健康检查与集成测试强化。
+
 **工程要点：**
 
 - **自定义 Interview Agent**：`question_chain`、`evaluation_chain`、`follow_up_chain` 等与状态机协同  
@@ -118,13 +124,26 @@ OPENAI_API_KEY=your_key
 REDIS_URL=redis://localhost:6379/0
 ```
 
+### 本地启动 API（工程 ① 已实现）
+
+```bash
+python -m pip install -e .
+export OPENAI_API_KEY=...   # Windows: set OPENAI_API_KEY=...
+interview-api
+# 或: python -m uvicorn interview_simulator.engineering.app:create_app --factory --host 0.0.0.0 --port 8000
+```
+
+文档：`http://127.0.0.1:8000/docs`  
+
+说明：当前默认会话在**进程内存**中；生产多实例请按「工程 ②」接入 Redis。
+
 ### Docker（规划）
 
 ```bash
 docker compose up --build
 ```
 
-具体 `Dockerfile` / `docker-compose.yml` 以实现为准。
+具体 `Dockerfile` / `docker-compose.yml` 以实现为准（工程 ③）。
 
 ---
 

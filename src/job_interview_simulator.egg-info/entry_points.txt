@@ -1,0 +1,2 @@
+[console_scripts]
+interview-api = interview_simulator.engineering.main:main
