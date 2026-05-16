@@ -9,9 +9,14 @@ src/interview_simulator/business_layer/schemas.py
 src/interview_simulator/engineering/__init__.py
 src/interview_simulator/engineering/api_schemas.py
 src/interview_simulator/engineering/app.py
+src/interview_simulator/engineering/factory.py
 src/interview_simulator/engineering/main.py
+src/interview_simulator/engineering/redis_store.py
 src/interview_simulator/engineering/service.py
+src/interview_simulator/engineering/session_codec.py
 src/interview_simulator/engineering/store.py
+src/interview_simulator/engineering/store_protocol.py
+src/interview_simulator/engineering/tasks.py
 src/interview_simulator/model_layer/__init__.py
 src/interview_simulator/model_layer/chains.py
 src/interview_simulator/model_layer/prompts.py
@@ -26,5 +31,7 @@ tests/test_api.py
 tests/test_composer_requires_key.py
 tests/test_decision.py
 tests/test_memory.py
+tests/test_redis_store.py
 tests/test_schemas.py
+tests/test_session_codec.py
 tests/test_state_machine.py

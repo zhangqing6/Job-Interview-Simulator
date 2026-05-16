@@ -6,6 +6,10 @@ from __future__ import annotations
 def main() -> None:
     import uvicorn
 
+    from interview_simulator.model_layer.chains import load_dotenv_if_present
+
+    load_dotenv_if_present()
+
     uvicorn.run(
         "interview_simulator.engineering.app:create_app",
         factory=True,

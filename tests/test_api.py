@@ -141,4 +141,6 @@ def test_report_before_finalize_is_409() -> None:
 
 def test_healthz() -> None:
     app = create_app(composer=FakeComposer())
-    assert TestClient(app).get("/healthz").json() == {"status": "ok"}
+    body = TestClient(app).get("/healthz").json()
+    assert body["status"] == "ok"
+    assert body["backend"] == "memory"

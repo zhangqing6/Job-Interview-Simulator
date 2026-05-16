@@ -89,8 +89,8 @@
 
 **工程层分三部分实施：**
 
-1. **工程 ① FastAPI 与 API 契约**：HTTP 服务、OpenAPI、`/interview/*` 与 `/healthz`、Pydantic 请求/响应模型、**进程内**会话存储（开发默认）；与状态机、决策、记忆、出题 Composer 串起来。  
-2. **工程 ② Redis 与异步强化**：会话外置、多实例一致读写的存储抽象；模型调用与 `BackgroundTasks` 等异步编排（在 ① 的接口契约上替换实现）。  
+1. **工程 ① FastAPI 与 API 契约**（已完成）：HTTP 服务、OpenAPI、`/interview/*` 与 `/healthz`、Pydantic 请求/响应模型、**进程内**会话存储（开发默认）；与状态机、决策、记忆、出题 Composer 串起来。  
+2. **工程 ② Redis 与异步强化**（已完成）：`SessionStore` 抽象、`REDIS_URL` 切换 `RedisSessionStore`、JSON 会话编解码、出题优先 `acompose` / `asyncio.to_thread` 回退、`BackgroundTasks` 审计日志、`/healthz` 含 Redis 探测。  
 3. **工程 ③ 可部署与可观测**：Docker / Compose、结构化日志（如 JSON Lines）、健康检查与集成测试强化。
 
 **工程要点：**
@@ -135,7 +135,17 @@ interview-api
 
 文档：`http://127.0.0.1:8000/docs`  
 
-说明：当前默认会话在**进程内存**中；生产多实例请按「工程 ②」接入 Redis。
+### Redis 会话（工程 ②）
+
+未设置 `REDIS_URL` 时使用进程内存储；多实例 / 生产请启动 Redis 并配置：
+
+```bash
+export REDIS_URL=redis://localhost:6379/0
+export SESSION_TTL_SECONDS=86400   # 可选，默认 86400
+interview-api
+```
+
+`/healthz` 在 Redis 模式下返回 `backend: redis` 与 `redis: true/false`。
 
 ### Docker（规划）
 

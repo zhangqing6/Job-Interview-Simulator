@@ -1,4 +1,4 @@
-"""Orchestrate FSM + decisions + memory behind the HTTP API (Engineering ①)."""
+"""Orchestrate FSM + decisions + memory behind the HTTP API."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ from interview_simulator.engineering.api_schemas import (
     InterviewStartResponse,
     InterviewStatusResponse,
 )
-from interview_simulator.engineering.store import InMemorySessionStore
+from interview_simulator.engineering.store_protocol import SessionStore
 from interview_simulator.model_layer.schemas import QuestionComposerResult
 
 
@@ -63,7 +63,7 @@ class InterviewHttpService:
 
     def __init__(
         self,
-        store: InMemorySessionStore,
+        store: SessionStore,
         composer: QuestionComposerLike,
     ) -> None:
         self._store = store
@@ -238,17 +238,24 @@ class InterviewHttpService:
         )
 
     async def _compose_question(self, session: SessionRecord, *, dimension: str) -> str:
-        loop = asyncio.get_running_loop()
-
-        def _call() -> QuestionComposerResult:
-            return self._composer.compose(
-                session.job_description,
-                session.resume,
+        jd = session.job_description
+        resume = session.resume
+        depth = session.expected_depth
+        if hasattr(self._composer, "acompose"):
+            result = await self._composer.acompose(  # type: ignore[union-attr]
+                jd,
+                resume,
                 dimension=dimension,
-                expected_depth=session.expected_depth,
+                expected_depth=depth,
             )
-
-        result: QuestionComposerResult = await loop.run_in_executor(None, _call)
+        else:
+            result = await asyncio.to_thread(
+                self._composer.compose,
+                jd,
+                resume,
+                dimension=dimension,
+                expected_depth=depth,
+            )
         return result.final_question.strip()
 
 
