@@ -1,11 +1,12 @@
-"""FastAPI application wiring (Engineering ① + ②)."""
+"""FastAPI application wiring (Engineering ①②③)."""
 
 from __future__ import annotations
 
+import json
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import BackgroundTasks, Depends, FastAPI
+from fastapi import BackgroundTasks, Depends, FastAPI, Response
 
 from interview_simulator.engineering.api_schemas import (
     InterviewAskRequest,
@@ -16,6 +17,9 @@ from interview_simulator.engineering.api_schemas import (
     InterviewStatusResponse,
 )
 from interview_simulator.engineering.factory import close_store, create_session_store, open_store
+from interview_simulator.engineering.health import build_health_payload, check_readiness
+from interview_simulator.engineering.logging_setup import configure_logging
+from interview_simulator.engineering.middleware import RequestLoggingMiddleware
 from interview_simulator.engineering.service import InterviewHttpService, QuestionComposerLike
 from interview_simulator.engineering.store_protocol import SessionStore
 from interview_simulator.engineering.tasks import audit_session_event
@@ -26,6 +30,7 @@ def create_app(
     *,
     store: SessionStore | None = None,
     composer: QuestionComposerLike | None = None,
+    enable_request_logging: bool = True,
 ) -> FastAPI:
     """Build the HTTP service. Pass ``store`` / ``composer`` overrides in tests."""
 
@@ -36,6 +41,7 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        configure_logging()
         app.state.store = session_store
         app.state.service = service
         await open_store(session_store)
@@ -46,10 +52,13 @@ def create_app(
 
     app = FastAPI(
         title="Job Interview Simulator API",
-        version="0.2.0",
-        description="FastAPI + optional Redis sessions (Engineering ①②).",
+        version="0.3.0",
+        description="FastAPI + Redis sessions + JSON logging (Engineering ①②③).",
         lifespan=lifespan,
     )
+
+    if enable_request_logging:
+        app.add_middleware(RequestLoggingMiddleware)
 
     def get_service() -> InterviewHttpService:
         return service
@@ -113,14 +122,18 @@ def create_app(
 
     @app.get("/healthz")
     async def healthz(st: SessionStore = Depends(get_store)) -> dict[str, Any]:
-        backend = "redis" if type(st).__name__ == "RedisSessionStore" else "memory"
-        payload: dict[str, Any] = {"status": "ok", "backend": backend}
-        if hasattr(st, "ping"):
-            redis_ok = await st.ping()  # type: ignore[union-attr]
-            payload["redis"] = redis_ok
-            if backend == "redis" and not redis_ok:
-                payload["status"] = "degraded"
-        return payload
+        return await build_health_payload(st)
+
+    @app.get("/readyz")
+    async def readyz(st: SessionStore = Depends(get_store)) -> Response:
+        ready, details = await check_readiness(st)
+        body = {"ready": ready, **details}
+        status = 200 if ready else 503
+        return Response(
+            content=json.dumps(body),
+            media_type="application/json",
+            status_code=status,
+        )
 
     return app
 

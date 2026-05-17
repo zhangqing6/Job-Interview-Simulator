@@ -21,18 +21,23 @@ async def audit_session_event(
 
     session = await store.get(session_id)
     if session is None:
-        logger.warning("audit_missing_session", extra={"session_id": session_id, "event": event})
+        logger.warning(
+            "audit_missing_session",
+            extra={"session_id": session_id, "audit_event": event},
+        )
         return
     ctx = session.fsm.context
-    payload = {
-        "session_id": session_id,
-        "event": event,
-        "state": ctx.state.value,
-        "main_round_index": ctx.main_round_index,
-        "turns_presented": ctx.turns_presented,
-        **(extra or {}),
-    }
-    logger.info("interview_session_event", extra=payload)
+    logger.info(
+        "interview_session_event",
+        extra={
+            "session_id": session_id,
+            "audit_event": event,
+            "state": ctx.state.value,
+            "main_round_index": ctx.main_round_index,
+            "turns_presented": ctx.turns_presented,
+            **(extra or {}),
+        },
+    )
 
 
 __all__ = ["audit_session_event"]

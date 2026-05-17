@@ -91,7 +91,7 @@
 
 1. **工程 ① FastAPI 与 API 契约**（已完成）：HTTP 服务、OpenAPI、`/interview/*` 与 `/healthz`、Pydantic 请求/响应模型、**进程内**会话存储（开发默认）；与状态机、决策、记忆、出题 Composer 串起来。  
 2. **工程 ② Redis 与异步强化**（已完成）：`SessionStore` 抽象、`REDIS_URL` 切换 `RedisSessionStore`、JSON 会话编解码、出题优先 `acompose` / `asyncio.to_thread` 回退、`BackgroundTasks` 审计日志、`/healthz` 含 Redis 探测。  
-3. **工程 ③ 可部署与可观测**：Docker / Compose、结构化日志（如 JSON Lines）、健康检查与集成测试强化。
+3. **工程 ③ 可部署与可观测**（已完成）：`Dockerfile` + `docker-compose.yml`（API + Redis）、`LOG_FORMAT=json` JSON Lines 日志、HTTP 请求中间件、`/healthz` + `/readyz`、端到端集成测试。
 
 **工程要点：**
 
@@ -147,13 +147,25 @@ interview-api
 
 `/healthz` 在 Redis 模式下返回 `backend: redis` 与 `redis: true/false`。
 
-### Docker（规划）
+### Docker（工程 ③）
 
 ```bash
+# 在项目根目录准备 .env（至少 OPENAI_API_KEY=...）
 docker compose up --build
 ```
 
-具体 `Dockerfile` / `docker-compose.yml` 以实现为准（工程 ③）。
+- **api**：`http://localhost:8000`（OpenAPI `/docs`）  
+- **redis**：`localhost:6379`（Compose 内网 `redis://redis:6379/0`）  
+- 健康检查：`/healthz`（存活）、`/readyz`（就绪，Redis 不可达时 503）
+
+### 可观测性（工程 ③）
+
+| 变量 | 说明 |
+|------|------|
+| `LOG_FORMAT` | `text`（默认）或 `json` / `jsonl` — 每行一条 JSON |
+| `LOG_LEVEL` | 如 `INFO`、`DEBUG` |
+
+Compose 默认 `LOG_FORMAT=json`。请求日志含 `request_id`、`duration_ms`；审计日志含 `audit_event`、`session_id` 等字段。
 
 ---
 
