@@ -1,11 +1,10 @@
-"""Orchestrate FSM + decisions + memory behind the HTTP API."""
+"""Orchestrate FSM + multi-agent LLM behind the HTTP API."""
 
 from __future__ import annotations
 
-import asyncio
 import uuid
 from dataclasses import dataclass, field
-from typing import Literal, Protocol
+from typing import Literal
 
 from fastapi import HTTPException
 
@@ -27,20 +26,12 @@ from interview_simulator.engineering.api_schemas import (
     InterviewReportResponse,
     InterviewStartResponse,
     InterviewStatusResponse,
+    PromptStrategy,
 )
+from interview_simulator.engineering.celery_app import dispatch_report_task
 from interview_simulator.engineering.store_protocol import SessionStore
-from interview_simulator.model_layer.schemas import QuestionComposerResult
-
-
-class QuestionComposerLike(Protocol):
-    def compose(
-        self,
-        job_description: str,
-        resume: str,
-        *,
-        dimension: str,
-        expected_depth: Literal["junior", "mid", "senior"],
-    ) -> QuestionComposerResult: ...
+from interview_simulator.model_layer.agents import InterviewAgentOrchestrator
+from interview_simulator.model_layer.report_schemas import InterviewLLMReport
 
 
 @dataclass
@@ -56,6 +47,9 @@ class SessionRecord:
     memory: InterviewMemory = field(default_factory=InterviewMemory)
     current_question: str = ""
     completed_rounds: list[CompletedRoundDTO] = field(default_factory=list)
+    prompt_strategy: PromptStrategy = "cot"
+    llm_report: InterviewLLMReport | None = None
+    report_pending: bool = False
 
 
 class InterviewHttpService:
@@ -64,10 +58,10 @@ class InterviewHttpService:
     def __init__(
         self,
         store: SessionStore,
-        composer: QuestionComposerLike,
+        orchestrator: InterviewAgentOrchestrator,
     ) -> None:
         self._store = store
-        self._composer = composer
+        self._orch = orchestrator
 
     async def start(
         self,
@@ -77,6 +71,7 @@ class InterviewHttpService:
         interview_dimension: str,
         expected_depth: Literal["junior", "mid", "senior"],
         evaluation_policy: EvaluationPolicy | None,
+        prompt_strategy: PromptStrategy = "cot",
     ) -> InterviewStartResponse:
         sid = str(uuid.uuid4())
         policy = evaluation_policy or EvaluationPolicy()
@@ -91,6 +86,7 @@ class InterviewHttpService:
             policy=policy,
             memory_config=MemoryConfig(),
             fsm=fsm,
+            prompt_strategy=prompt_strategy,
         )
         q = await self._compose_question(session, dimension=session.interview_dimension)
         session.current_question = q
@@ -103,6 +99,7 @@ class InterviewHttpService:
             state=ctx.state.value,
             prompt_lane=prompt_lane_for_state(ctx.state),
             current_question=q,
+            prompt_strategy=prompt_strategy,
         )
 
     async def ask(
@@ -111,6 +108,7 @@ class InterviewHttpService:
         session_id: str,
         answer: str,
         scores: RoundScores | None,
+        use_llm_scoring: bool | None = None,
     ) -> InterviewAskResponse:
         session = await self._store.get(session_id)
         if session is None:
@@ -123,7 +121,12 @@ class InterviewHttpService:
                 detail=f"Cannot submit an answer in state {session.fsm.context.state.value!r}.",
             )
 
-        rubric = scores or RoundScores(technical_depth=3, clarity=3, relevance=3)
+        rubric, scores_source, reasoning = await self._resolve_scores(
+            session,
+            answer=answer.strip(),
+            client_scores=scores,
+            use_llm_scoring=use_llm_scoring,
+        )
         main_idx = session.fsm.context.main_round_index
         fu = session.fsm.context.follow_ups_in_round
 
@@ -139,7 +142,7 @@ class InterviewHttpService:
         )
         session.fsm.patch_context(consecutive_weak_rounds=new_streak)
 
-        ev_note = (
+        ev_note = reasoning or (
             f"scores depth={rubric.technical_depth} clarity={rubric.clarity} relevance={rubric.relevance}"
         )
         session.memory.append_round_line(
@@ -162,6 +165,7 @@ class InterviewHttpService:
         session.fsm.apply(event)
 
         if event is InterviewEvent.EVAL_FINALIZE:
+            await self._schedule_report_generation(session)
             await self._store.put(session)
             return InterviewAskResponse(
                 session_id=session_id,
@@ -170,6 +174,9 @@ class InterviewHttpService:
                 finalized=True,
                 current_question=None,
                 message="Interview ended.",
+                scores=rubric,
+                scores_source=scores_source,
+                evaluation_reasoning=reasoning,
             )
 
         if event is InterviewEvent.EVAL_FOLLOW_UP:
@@ -189,9 +196,11 @@ class InterviewHttpService:
                 finalized=False,
                 current_question=fq,
                 message="Follow-up question.",
+                scores=rubric,
+                scores_source=scores_source,
+                evaluation_reasoning=reasoning,
             )
 
-        # EVAL_NEXT_QUESTION
         session.fsm.apply(InterviewEvent.BEGIN_PREPARE_NEXT)
         nq = await self._compose_question(session, dimension=session.interview_dimension)
         session.current_question = nq
@@ -206,6 +215,9 @@ class InterviewHttpService:
             finalized=False,
             current_question=nq,
             message="Next main question.",
+            scores=rubric,
+            scores_source=scores_source,
+            evaluation_reasoning=reasoning,
         )
 
     async def status(self, session_id: str) -> InterviewStatusResponse:
@@ -221,6 +233,7 @@ class InterviewHttpService:
             context=ctx.model_dump(mode="json"),
             current_question=session.current_question,
             memory_context_excerpt=excerpt,
+            report_ready=session.llm_report is not None,
         )
 
     async def report(self, session_id: str) -> InterviewReportResponse:
@@ -229,34 +242,92 @@ class InterviewHttpService:
             raise HTTPException(status_code=404, detail="Unknown session_id.")
         if session.fsm.context.state is not InterviewState.FINALIZE:
             raise HTTPException(status_code=409, detail="Interview not finalized yet.")
-        summary = _closing_summary(session)
-        return InterviewReportResponse(
-            session_id=session_id,
-            state=session.fsm.context.state.value,
-            rounds=list(session.completed_rounds),
-            closing_summary=summary,
+        if session.llm_report is None and self._orch.use_llm_report:
+            llm = await self._orch.build_report(
+                job_description=session.job_description,
+                resume=session.resume,
+                memory_context=session.memory.materialize_context_block(),
+                rounds=session.completed_rounds,
+            )
+            if llm is not None:
+                session.llm_report = llm
+                session.report_pending = False
+                await self._store.put(session)
+
+        return _build_report_response(session)
+
+    async def _resolve_scores(
+        self,
+        session: SessionRecord,
+        *,
+        answer: str,
+        client_scores: RoundScores | None,
+        use_llm_scoring: bool | None,
+    ) -> tuple[RoundScores, Literal["client", "llm", "heuristic"], str | None]:
+        if client_scores is not None:
+            return client_scores, "client", None
+
+        llm_on = self._orch.use_llm_scoring if use_llm_scoring is None else use_llm_scoring
+        if llm_on:
+            eval_result = await self._orch.score_answer(
+                job_description=session.job_description,
+                resume=session.resume,
+                question=session.current_question,
+                answer=answer,
+            )
+            if eval_result.key_facts:
+                session.memory.add_key_facts(eval_result.key_facts, config=session.memory_config)
+            return eval_result.to_round_scores(), "llm", eval_result.reasoning
+
+        eval_result = await self._orch.score_answer(
+            job_description=session.job_description,
+            resume=session.resume,
+            question=session.current_question,
+            answer=answer,
         )
+        return eval_result.to_round_scores(), "heuristic", eval_result.reasoning
+
+    async def _schedule_report_generation(self, session: SessionRecord) -> None:
+        if not self._orch.use_llm_report:
+            return
+        session.report_pending = True
+        dispatch_report_task(session.session_id)
 
     async def _compose_question(self, session: SessionRecord, *, dimension: str) -> str:
-        jd = session.job_description
-        resume = session.resume
-        depth = session.expected_depth
-        if hasattr(self._composer, "acompose"):
-            result = await self._composer.acompose(  # type: ignore[union-attr]
-                jd,
-                resume,
-                dimension=dimension,
-                expected_depth=depth,
-            )
-        else:
-            result = await asyncio.to_thread(
-                self._composer.compose,
-                jd,
-                resume,
-                dimension=dimension,
-                expected_depth=depth,
-            )
+        result = await self._orch.compose_question(
+            session.job_description,
+            session.resume,
+            dimension=dimension,
+            expected_depth=session.expected_depth,
+            prompt_strategy=session.prompt_strategy,
+        )
         return result.final_question.strip()
+
+
+def _build_report_response(session: SessionRecord) -> InterviewReportResponse:
+    if session.llm_report is not None:
+        r = session.llm_report
+        return InterviewReportResponse(
+            session_id=session.session_id,
+            state=session.fsm.context.state.value,
+            rounds=list(session.completed_rounds),
+            closing_summary=r.closing_summary,
+            overall_assessment=r.overall_assessment,
+            strengths=list(r.strengths),
+            improvement_suggestions=list(r.improvement_suggestions),
+            recommended_study_topics=list(r.recommended_study_topics),
+            report_source="llm",
+            report_pending=session.report_pending,
+        )
+    summary = _closing_summary(session)
+    return InterviewReportResponse(
+        session_id=session.session_id,
+        state=session.fsm.context.state.value,
+        rounds=list(session.completed_rounds),
+        closing_summary=summary,
+        report_source="heuristic",
+        report_pending=session.report_pending,
+    )
 
 
 def _closing_summary(session: SessionRecord) -> str:
@@ -270,4 +341,4 @@ def _closing_summary(session: SessionRecord) -> str:
     )
 
 
-__all__ = ["InterviewHttpService", "QuestionComposerLike", "SessionRecord"]
+__all__ = ["InterviewHttpService", "SessionRecord"]

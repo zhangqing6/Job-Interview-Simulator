@@ -51,3 +51,4 @@ class QuestionComposerResult(BaseModel):
     was_rewritten: bool
     critique: QuestionCritique
     initial_question: str
+    prompt_strategy: Literal["zero_shot", "few_shot", "cot"] = "cot"

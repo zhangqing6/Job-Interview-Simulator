@@ -12,7 +12,8 @@ from interview_simulator.engineering.app import create_app
 from interview_simulator.engineering.redis_store import RedisSessionStore
 from interview_simulator.engineering.service import SessionRecord
 from interview_simulator.engineering.session_codec import decode_session, encode_session
-from tests.test_api import FakeComposer
+from interview_simulator.model_layer.agents import InterviewAgentOrchestrator
+from tests.test_fakes import FakeComposer, FakeReporter, FakeScorer
 
 
 @pytest.fixture
@@ -64,7 +65,14 @@ async def test_redis_ping(fake_redis_store: RedisSessionStore) -> None:
 
 
 def test_api_end_to_end_with_redis_store(fake_redis_store: RedisSessionStore) -> None:
-    app = create_app(composer=FakeComposer(), store=fake_redis_store)
+    orch = InterviewAgentOrchestrator(
+        interviewer=FakeComposer(),
+        scorer=FakeScorer(),
+        reporter=FakeReporter(),
+        use_llm_scoring=True,
+        use_llm_report=True,
+    )
+    app = create_app(orchestrator=orch, store=fake_redis_store)
     client = TestClient(app)
 
     r = client.post(
@@ -82,8 +90,7 @@ def test_api_end_to_end_with_redis_store(fake_redis_store: RedisSessionStore) ->
         "/interview/ask",
         json={
             "session_id": sid,
-            "answer": "answer",
-            "scores": {"technical_depth": 5, "clarity": 5, "relevance": 5},
+            "answer": "A detailed answer with enough length for scoring.",
         },
     )
     assert r2.status_code == 200

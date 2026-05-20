@@ -9,6 +9,9 @@ from pydantic import BaseModel, Field
 from interview_simulator.business_layer.schemas import EvaluationPolicy, RoundScores
 
 
+PromptStrategy = Literal["zero_shot", "few_shot", "cot"]
+
+
 class InterviewStartRequest(BaseModel):
     job_description: str = Field(..., min_length=1)
     resume: str = Field(..., min_length=1)
@@ -21,6 +24,14 @@ class InterviewStartRequest(BaseModel):
         default=None,
         description="If omitted, server defaults are used.",
     )
+    prompt_strategy: PromptStrategy = Field(
+        "cot",
+        description="Prompt experiment: zero_shot | few_shot | cot (CoT + self-critique).",
+    )
+    stream: bool = Field(
+        False,
+        description="If true, use POST /interview/start/stream for SSE token stream.",
+    )
 
 
 class InterviewStartResponse(BaseModel):
@@ -28,6 +39,8 @@ class InterviewStartResponse(BaseModel):
     state: str
     prompt_lane: str
     current_question: str
+    prompt_strategy: PromptStrategy = "cot"
+    scores_source: str | None = None
 
 
 class InterviewAskRequest(BaseModel):
@@ -35,7 +48,11 @@ class InterviewAskRequest(BaseModel):
     answer: str = Field(..., min_length=1)
     scores: RoundScores | None = Field(
         default=None,
-        description="Structured rubric scores (1–5). If omitted, neutral defaults are used until an LLM scorer is wired.",
+        description="Optional client scores (1–5). If omitted, LLM scorer runs when enabled.",
+    )
+    use_llm_scoring: bool | None = Field(
+        default=None,
+        description="Override USE_LLM_SCORING for this request.",
     )
 
 
@@ -49,6 +66,9 @@ class InterviewAskResponse(BaseModel):
         default=None,
         description="Short UX hint, e.g. interview ended or next prompt lane.",
     )
+    scores: RoundScores | None = None
+    scores_source: Literal["client", "llm", "heuristic"] | None = None
+    evaluation_reasoning: str | None = None
 
 
 class InterviewStatusResponse(BaseModel):
@@ -58,6 +78,7 @@ class InterviewStatusResponse(BaseModel):
     context: dict
     current_question: str
     memory_context_excerpt: str
+    report_ready: bool = False
 
 
 class CompletedRoundDTO(BaseModel):
@@ -73,6 +94,12 @@ class InterviewReportResponse(BaseModel):
     state: str
     rounds: list[CompletedRoundDTO]
     closing_summary: str
+    overall_assessment: str | None = None
+    strengths: list[str] = Field(default_factory=list)
+    improvement_suggestions: list[str] = Field(default_factory=list)
+    recommended_study_topics: list[str] = Field(default_factory=list)
+    report_source: Literal["llm", "heuristic"] = "heuristic"
+    report_pending: bool = False
 
 
 __all__ = [
@@ -83,4 +110,5 @@ __all__ = [
     "InterviewStartRequest",
     "InterviewStartResponse",
     "InterviewStatusResponse",
+    "PromptStrategy",
 ]

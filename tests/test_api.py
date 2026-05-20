@@ -1,47 +1,27 @@
-"""HTTP API smoke tests (no OpenAI key — fake composer)."""
+"""HTTP API smoke tests (fake multi-agent — no OpenAI)."""
 
 from __future__ import annotations
-
-from typing import Literal
 
 from fastapi.testclient import TestClient
 
 from interview_simulator.engineering.app import create_app
-from interview_simulator.model_layer.schemas import QuestionComposerResult, QuestionCritique
+from interview_simulator.model_layer.agents import InterviewAgentOrchestrator
+from tests.test_fakes import FakeComposer, FakeReporter, FakeScorer
 
 
-class FakeComposer:
-    def __init__(self) -> None:
-        self._n = 0
-
-    def compose(
-        self,
-        job_description: str,
-        resume: str,
-        *,
-        dimension: str,
-        expected_depth: Literal["junior", "mid", "senior"],
-    ) -> QuestionComposerResult:
-        self._n += 1
-        q = f"Q{self._n}: ({expected_depth}) {dimension[:40]}"
-        crit = QuestionCritique(
-            difficulty_adequate=True,
-            relevance_adequate=True,
-            reasoning="stub",
-            improvement_hint=None,
-        )
-        return QuestionComposerResult(
-            final_question=q,
-            expected_depth=expected_depth,
-            was_rewritten=False,
-            critique=crit,
-            initial_question=q,
-        )
+def _client() -> TestClient:
+    orch = InterviewAgentOrchestrator(
+        interviewer=FakeComposer(),
+        scorer=FakeScorer(),
+        reporter=FakeReporter(),
+        use_llm_scoring=True,
+        use_llm_report=True,
+    )
+    return TestClient(create_app(orchestrator=orch))
 
 
 def test_start_ask_finalize_and_report() -> None:
-    app = create_app(composer=FakeComposer())
-    client = TestClient(app)
+    client = _client()
 
     r = client.post(
         "/interview/start",
@@ -63,29 +43,30 @@ def test_start_ask_finalize_and_report() -> None:
         "/interview/ask",
         json={
             "session_id": sid,
-            "answer": "I would use idempotency keys and retries.",
-            "scores": {"technical_depth": 5, "clarity": 5, "relevance": 5},
+            "answer": "I would use idempotency keys and retries with detailed metrics.",
+            "scores": None,
         },
     )
     assert r2.status_code == 200, r2.text
     ask = r2.json()
     assert ask["finalized"] is True
-    assert ask["state"] == "finalize"
+    assert ask["scores_source"] == "llm"
+    assert ask["scores"]["technical_depth"] == 5
 
-    r409 = client.get(f"/interview/report/{sid}")
-    assert r409.status_code == 200
-    rep = r409.json()
-    assert rep["state"] == "finalize"
-    assert len(rep["rounds"]) == 1
+    rep = client.get(f"/interview/report/{sid}")
+    assert rep.status_code == 200
+    report = rep.json()
+    assert report["report_source"] == "llm"
+    assert len(report["improvement_suggestions"]) >= 1
+    assert report["overall_assessment"]
 
     st = client.get(f"/interview/status/{sid}")
     assert st.status_code == 200
-    assert st.json()["state"] == "finalize"
+    assert st.json()["report_ready"] is True
 
 
 def test_follow_up_then_next_question() -> None:
-    app = create_app(composer=FakeComposer())
-    client = TestClient(app)
+    client = _client()
 
     r = client.post(
         "/interview/start",
@@ -99,23 +80,19 @@ def test_follow_up_then_next_question() -> None:
 
     r2 = client.post(
         "/interview/ask",
-        json={
-            "session_id": sid,
-            "answer": "vague",
-            "scores": {"technical_depth": 2, "clarity": 2, "relevance": 3},
-        },
+        json={"session_id": sid, "answer": "vague"},
     )
     assert r2.status_code == 200
     assert r2.json()["finalized"] is False
     assert "Follow-up" in (r2.json().get("message") or "")
-    assert r2.json()["current_question"].startswith("Q2:")
+    assert r2.json()["scores_source"] == "llm"
+    assert r2.json()["scores"]["technical_depth"] == 2
 
     r3 = client.post(
         "/interview/ask",
         json={
             "session_id": sid,
-            "answer": "better detail now",
-            "scores": {"technical_depth": 5, "clarity": 5, "relevance": 5},
+            "answer": "better detail now with metrics and architecture diagram",
         },
     )
     assert r3.status_code == 200
@@ -123,15 +100,30 @@ def test_follow_up_then_next_question() -> None:
     assert r3.json()["current_question"].startswith("Q3:")
 
 
+def test_client_scores_override_llm() -> None:
+    client = _client()
+    sid = client.post(
+        "/interview/start",
+        json={"job_description": "JD", "resume": "CV", "evaluation_policy": {"max_main_questions": 1}},
+    ).json()["session_id"]
+    r = client.post(
+        "/interview/ask",
+        json={
+            "session_id": sid,
+            "answer": "short",
+            "scores": {"technical_depth": 1, "clarity": 1, "relevance": 1},
+        },
+    )
+    assert r.json()["scores_source"] == "client"
+
+
 def test_unknown_session_returns_404() -> None:
-    app = create_app(composer=FakeComposer())
-    client = TestClient(app)
+    client = _client()
     assert client.get("/interview/status/00000000-0000-0000-0000-000000000000").status_code == 404
 
 
 def test_report_before_finalize_is_409() -> None:
-    app = create_app(composer=FakeComposer())
-    client = TestClient(app)
+    client = _client()
     sid = client.post(
         "/interview/start",
         json={"job_description": "JD", "resume": "CV"},
@@ -140,7 +132,6 @@ def test_report_before_finalize_is_409() -> None:
 
 
 def test_healthz() -> None:
-    app = create_app(composer=FakeComposer())
-    body = TestClient(app).get("/healthz").json()
+    body = _client().get("/healthz").json()
     assert body["status"] == "ok"
     assert body["backend"] == "memory"

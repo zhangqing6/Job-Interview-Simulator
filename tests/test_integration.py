@@ -7,7 +7,18 @@ from fastapi.testclient import TestClient
 
 from interview_simulator.engineering.app import create_app
 from interview_simulator.engineering.redis_store import RedisSessionStore
-from tests.test_api import FakeComposer
+from interview_simulator.model_layer.agents import InterviewAgentOrchestrator
+from tests.test_fakes import FakeComposer, FakeReporter, FakeScorer
+
+
+def _orch() -> InterviewAgentOrchestrator:
+    return InterviewAgentOrchestrator(
+        interviewer=FakeComposer(),
+        scorer=FakeScorer(),
+        reporter=FakeReporter(),
+        use_llm_scoring=True,
+        use_llm_report=True,
+    )
 
 
 def _client(*, redis: bool = False) -> TestClient:
@@ -15,8 +26,8 @@ def _client(*, redis: bool = False) -> TestClient:
         store = RedisSessionStore.from_client(
             fakeredis_aioredis.FakeRedis(decode_responses=True)
         )
-        return TestClient(create_app(composer=FakeComposer(), store=store))
-    return TestClient(create_app(composer=FakeComposer()))
+        return TestClient(create_app(orchestrator=_orch(), store=store))
+    return TestClient(create_app(orchestrator=_orch()))
 
 
 def test_full_interview_lifecycle_memory() -> None:
@@ -42,8 +53,7 @@ def test_full_interview_lifecycle_memory() -> None:
         "/interview/ask",
         json={
             "session_id": sid,
-            "answer": "I would shard by tenant id and use outbox pattern.",
-            "scores": {"technical_depth": 4, "clarity": 4, "relevance": 4},
+            "answer": "I would shard by tenant id and use outbox pattern with metrics.",
         },
     )
     assert ask1.status_code == 200
@@ -53,8 +63,7 @@ def test_full_interview_lifecycle_memory() -> None:
         "/interview/ask",
         json={
             "session_id": sid,
-            "answer": "For the second question I would add circuit breakers.",
-            "scores": {"technical_depth": 5, "clarity": 5, "relevance": 5},
+            "answer": "For the second question I would add circuit breakers and dashboards.",
         },
     )
     assert ask2.status_code == 200
@@ -70,6 +79,8 @@ def test_full_interview_lifecycle_memory() -> None:
     body = report.json()
     assert len(body["rounds"]) == 2
     assert body["closing_summary"]
+    assert body["report_source"] == "llm"
+    assert body["improvement_suggestions"]
 
 
 def test_full_interview_lifecycle_redis_backend() -> None:

@@ -13,8 +13,9 @@ from interview_simulator.business_layer import (
 )
 from interview_simulator.business_layer.interview_fsm import InterviewSessionContext
 from interview_simulator.business_layer.schemas import EvaluationPolicy
-from interview_simulator.engineering.api_schemas import CompletedRoundDTO
+from interview_simulator.engineering.api_schemas import CompletedRoundDTO, PromptStrategy
 from interview_simulator.engineering.service import SessionRecord
+from interview_simulator.model_layer.report_schemas import InterviewLLMReport
 
 
 class StoredSession(BaseModel):
@@ -31,6 +32,9 @@ class StoredSession(BaseModel):
     memory: InterviewMemory = Field(default_factory=InterviewMemory)
     current_question: str = ""
     completed_rounds: list[CompletedRoundDTO] = Field(default_factory=list)
+    prompt_strategy: PromptStrategy = "cot"
+    llm_report: InterviewLLMReport | None = None
+    report_pending: bool = False
 
 
 def encode_session(record: SessionRecord) -> str:
@@ -46,6 +50,9 @@ def encode_session(record: SessionRecord) -> str:
         memory=record.memory,
         current_question=record.current_question,
         completed_rounds=list(record.completed_rounds),
+        prompt_strategy=record.prompt_strategy,
+        llm_report=record.llm_report,
+        report_pending=record.report_pending,
     )
     return stored.model_dump_json()
 
@@ -64,6 +71,9 @@ def decode_session(payload: str) -> SessionRecord:
         memory=stored.memory,
         current_question=stored.current_question,
         completed_rounds=list(stored.completed_rounds),
+        prompt_strategy=stored.prompt_strategy,
+        llm_report=stored.llm_report,
+        report_pending=stored.report_pending,
     )
 
 
