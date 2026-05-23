@@ -6,9 +6,11 @@ import json
 
 from langchain_core.prompts import ChatPromptTemplate
 
-from interview_simulator.engineering.api_schemas import CompletedRoundDTO
+from interview_simulator.business_layer.schemas import CompletedRoundDTO
+from interview_simulator.model_layer.language import InterviewLanguage, report_language_rule
 from interview_simulator.model_layer.llm_factory import create_chat_llm
 from interview_simulator.model_layer.observability import log_llm_event
+from interview_simulator.model_layer.structured_compat import make_structured_chain
 from interview_simulator.model_layer.report_prompts import REPORTER_SYSTEM, REPORTER_USER
 from interview_simulator.model_layer.report_schemas import InterviewLLMReport
 
@@ -36,9 +38,11 @@ class InterviewReportAgent:
 
     def __init__(self, llm=None) -> None:
         self._llm = llm or create_chat_llm(agent="reporter", operation="report", temperature=0.4)
-        self._chain = ChatPromptTemplate.from_messages(
-            [("system", REPORTER_SYSTEM), ("human", REPORTER_USER)]
-        ) | self._llm.with_structured_output(InterviewLLMReport)
+        self._chain = make_structured_chain(
+            ChatPromptTemplate.from_messages([("system", REPORTER_SYSTEM), ("human", REPORTER_USER)]),
+            self._llm,
+            InterviewLLMReport,
+        )
 
     def generate(
         self,
@@ -47,6 +51,7 @@ class InterviewReportAgent:
         resume: str,
         memory_context: str,
         rounds: list[CompletedRoundDTO],
+        interview_language: InterviewLanguage = "zh",
     ) -> InterviewLLMReport:
         log_llm_event(agent="reporter", operation="generate", status="start")
         result: InterviewLLMReport = self._chain.invoke(
@@ -55,6 +60,7 @@ class InterviewReportAgent:
                 "resume": resume.strip(),
                 "memory_context": memory_context.strip() or "(none)",
                 "rounds_summary": _rounds_to_text(rounds),
+                "language_rule": report_language_rule(interview_language),
             }
         )
         log_llm_event(agent="reporter", operation="generate", status="ok")
@@ -67,6 +73,7 @@ class InterviewReportAgent:
         resume: str,
         memory_context: str,
         rounds: list[CompletedRoundDTO],
+        interview_language: InterviewLanguage = "zh",
     ) -> InterviewLLMReport:
         log_llm_event(agent="reporter", operation="agenerate", status="start")
         result: InterviewLLMReport = await self._chain.ainvoke(
@@ -75,6 +82,7 @@ class InterviewReportAgent:
                 "resume": resume.strip(),
                 "memory_context": memory_context.strip() or "(none)",
                 "rounds_summary": _rounds_to_text(rounds),
+                "language_rule": report_language_rule(interview_language),
             }
         )
         log_llm_event(agent="reporter", operation="agenerate", status="ok")

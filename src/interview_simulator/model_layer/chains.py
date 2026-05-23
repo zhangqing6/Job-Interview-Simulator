@@ -6,7 +6,13 @@ from typing import Literal
 
 from langchain_core.prompts import ChatPromptTemplate
 
+from interview_simulator.model_layer.language import (
+    InterviewLanguage,
+    critique_language_rule,
+    question_language_rule,
+)
 from interview_simulator.model_layer.llm_factory import create_chat_llm
+from interview_simulator.model_layer.structured_compat import make_structured_chain
 from interview_simulator.model_layer.prompt_strategy import (
     FEW_SHOT_GENERATION_PREFIX,
     PromptStrategy,
@@ -43,21 +49,40 @@ class InterviewQuestionComposer:
             agent="interviewer",
             operation="compose",
         )
-        self._gen_cot = ChatPromptTemplate.from_messages(
+        _gen_prompt = ChatPromptTemplate.from_messages(
             [("system", GENERATION_SYSTEM), ("human", GENERATION_USER)]
-        ) | self._llm.with_structured_output(GeneratedQuestion)
-        self._gen_zero = ChatPromptTemplate.from_messages(
-            [("system", ZERO_SHOT_GENERATION_SYSTEM), ("human", GENERATION_USER)]
-        ) | self._llm.with_structured_output(GeneratedQuestion)
-        self._gen_few = ChatPromptTemplate.from_messages(
-            [("system", FEW_SHOT_GENERATION_PREFIX + "\n" + GENERATION_SYSTEM), ("human", GENERATION_USER)]
-        ) | self._llm.with_structured_output(GeneratedQuestion)
-        self._crit = ChatPromptTemplate.from_messages(
-            [("system", CRITIQUE_SYSTEM), ("human", CRITIQUE_USER)]
-        ) | self._llm.with_structured_output(QuestionCritique)
-        self._rewrite = ChatPromptTemplate.from_messages(
-            [("system", REWRITE_SYSTEM), ("human", REWRITE_USER)]
-        ) | self._llm.with_structured_output(GeneratedQuestion)
+        )
+        _inherit_depth = ("expected_depth",)
+        self._gen_cot = make_structured_chain(
+            _gen_prompt, self._llm, GeneratedQuestion, inherit_fields=_inherit_depth
+        )
+        self._gen_zero = make_structured_chain(
+            ChatPromptTemplate.from_messages(
+                [("system", ZERO_SHOT_GENERATION_SYSTEM), ("human", GENERATION_USER)]
+            ),
+            self._llm,
+            GeneratedQuestion,
+            inherit_fields=_inherit_depth,
+        )
+        self._gen_few = make_structured_chain(
+            ChatPromptTemplate.from_messages(
+                [("system", FEW_SHOT_GENERATION_PREFIX + "\n" + GENERATION_SYSTEM), ("human", GENERATION_USER)]
+            ),
+            self._llm,
+            GeneratedQuestion,
+            inherit_fields=_inherit_depth,
+        )
+        self._crit = make_structured_chain(
+            ChatPromptTemplate.from_messages([("system", CRITIQUE_SYSTEM), ("human", CRITIQUE_USER)]),
+            self._llm,
+            QuestionCritique,
+        )
+        self._rewrite = make_structured_chain(
+            ChatPromptTemplate.from_messages([("system", REWRITE_SYSTEM), ("human", REWRITE_USER)]),
+            self._llm,
+            GeneratedQuestion,
+            inherit_fields=_inherit_depth,
+        )
 
     def _gen_chain(self, prompt_strategy: PromptStrategy):
         if prompt_strategy == "zero_shot":
@@ -73,12 +98,18 @@ class InterviewQuestionComposer:
         *,
         dimension: str,
         expected_depth: Literal["junior", "mid", "senior"],
+        interview_language: InterviewLanguage = "zh",
+        for_critique: bool = False,
     ) -> dict:
+        rule = critique_language_rule(interview_language) if for_critique else question_language_rule(
+            interview_language
+        )
         return {
             "job_description": job_description.strip(),
             "resume": resume.strip(),
             "dimension": dimension,
             "expected_depth": expected_depth,
+            "language_rule": rule,
         }
 
     def compose(
@@ -89,9 +120,18 @@ class InterviewQuestionComposer:
         dimension: str = "technical depth",
         expected_depth: Literal["junior", "mid", "senior"] = "mid",
         prompt_strategy: PromptStrategy = "cot",
+        interview_language: InterviewLanguage = "zh",
     ) -> QuestionComposerResult:
         if prompt_strategy == "zero_shot":
-            initial = self._gen_zero.invoke(self._payload(job_description, resume, dimension=dimension, expected_depth=expected_depth))
+            initial = self._gen_zero.invoke(
+                self._payload(
+                    job_description,
+                    resume,
+                    dimension=dimension,
+                    expected_depth=expected_depth,
+                    interview_language=interview_language,
+                )
+            )
             return QuestionComposerResult(
                 final_question=initial.question_text,
                 expected_depth=initial.expected_depth,
@@ -107,10 +147,24 @@ class InterviewQuestionComposer:
             )
 
         gen = self._gen_chain(prompt_strategy)
-        initial = gen.invoke(self._payload(job_description, resume, dimension=dimension, expected_depth=expected_depth))
+        base = self._payload(
+            job_description,
+            resume,
+            dimension=dimension,
+            expected_depth=expected_depth,
+            interview_language=interview_language,
+        )
+        initial = gen.invoke(base)
         critique = self._crit.invoke(
             {
-                **self._payload(job_description, resume, dimension=dimension, expected_depth=expected_depth),
+                **self._payload(
+                    job_description,
+                    resume,
+                    dimension=dimension,
+                    expected_depth=expected_depth,
+                    interview_language=interview_language,
+                    for_critique=True,
+                ),
                 "question_text": initial.question_text,
             }
         )
@@ -127,7 +181,7 @@ class InterviewQuestionComposer:
         hint = critique.improvement_hint or critique.reasoning
         revised = self._rewrite.invoke(
             {
-                **self._payload(job_description, resume, dimension=dimension, expected_depth=expected_depth),
+                **base,
                 "question_text": initial.question_text,
                 "critique_reasoning": critique.reasoning,
                 "improvement_hint": hint,
@@ -150,10 +204,17 @@ class InterviewQuestionComposer:
         dimension: str = "technical depth",
         expected_depth: Literal["junior", "mid", "senior"] = "mid",
         prompt_strategy: PromptStrategy = "cot",
+        interview_language: InterviewLanguage = "zh",
     ) -> QuestionComposerResult:
         if prompt_strategy == "zero_shot":
             initial = await self._gen_zero.ainvoke(
-                self._payload(job_description, resume, dimension=dimension, expected_depth=expected_depth)
+                self._payload(
+                    job_description,
+                    resume,
+                    dimension=dimension,
+                    expected_depth=expected_depth,
+                    interview_language=interview_language,
+                )
             )
             return QuestionComposerResult(
                 final_question=initial.question_text,
@@ -170,10 +231,24 @@ class InterviewQuestionComposer:
             )
 
         gen = self._gen_chain(prompt_strategy)
-        initial = await gen.ainvoke(self._payload(job_description, resume, dimension=dimension, expected_depth=expected_depth))
+        base = self._payload(
+            job_description,
+            resume,
+            dimension=dimension,
+            expected_depth=expected_depth,
+            interview_language=interview_language,
+        )
+        initial = await gen.ainvoke(base)
         critique = await self._crit.ainvoke(
             {
-                **self._payload(job_description, resume, dimension=dimension, expected_depth=expected_depth),
+                **self._payload(
+                    job_description,
+                    resume,
+                    dimension=dimension,
+                    expected_depth=expected_depth,
+                    interview_language=interview_language,
+                    for_critique=True,
+                ),
                 "question_text": initial.question_text,
             }
         )
@@ -190,7 +265,7 @@ class InterviewQuestionComposer:
         hint = critique.improvement_hint or critique.reasoning
         revised = await self._rewrite.ainvoke(
             {
-                **self._payload(job_description, resume, dimension=dimension, expected_depth=expected_depth),
+                **base,
                 "question_text": initial.question_text,
                 "critique_reasoning": critique.reasoning,
                 "improvement_hint": hint,

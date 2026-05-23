@@ -1,9 +1,10 @@
 Metadata-Version: 2.4
 Name: job-interview-simulator
-Version: 0.1.0
+Version: 0.3.0
 Summary: Multi-Agent Job Interview Simulator (LangChain + FastAPI + FSM)
 Requires-Python: >=3.10
 Description-Content-Type: text/markdown
+License-File: LICENSE
 Requires-Dist: fastapi>=0.115.0
 Requires-Dist: langchain-core>=0.3.0
 Requires-Dist: langchain-openai>=0.2.0
@@ -16,12 +17,15 @@ Requires-Dist: fakeredis>=2.26.0; extra == "dev"
 Requires-Dist: httpx>=0.27.0; extra == "dev"
 Requires-Dist: pytest>=8.0; extra == "dev"
 Requires-Dist: pytest-asyncio>=0.24.0; extra == "dev"
+Provides-Extra: worker
+Requires-Dist: celery>=5.3.0; extra == "worker"
+Dynamic: license-file
 
 # 智能面试官 Agent —— 基于 LangChain 的多轮情境面试系统
 
 **英文名：** Multi-Agent Job Interview Simulator with Automated Evaluation
 
-模拟真实技术面试流程：Agent 根据**职位描述**与**候选人简历**动态提问、追问、评估回答质量，并输出**结构化反馈**。支持多候选人、多面试维度与流程配置。
+模拟真实技术面试流程：Agent 根据**职位描述**与**候选人简历**动态提问、追问，结合**结构化评分**驱动状态机分支，并输出**结构化面试报告**。支持多会话隔离（Redis）、可 Docker 部署。
 
 ---
 
@@ -31,15 +35,36 @@ Requires-Dist: pytest-asyncio>=0.24.0; extra == "dev"
 
 ---
 
+## 实现状态总览
+
+| 模块 | 状态 | 说明 |
+|------|------|------|
+| 模型层 · 出题 CoT + Self-Critique | ✅ | `InterviewQuestionComposer` |
+| 模型层 · Prompt 实验 | ✅ | `prompt_strategy`: `zero_shot` / `few_shot` / `cot` |
+| 模型层 · LLM 自动评回答 | ✅ | `AnswerEvaluationAgent`（`scorer`）；可传 `scores` 覆盖 |
+| 模型层 · LLM 深度报告 | ✅ | `InterviewReportAgent`（`reporter`） |
+| 多 Agent 编排 | ✅ | `InterviewAgentOrchestrator`：interviewer + scorer + reporter |
+| 流式出题 SSE | ✅ | `POST /interview/start/stream` |
+| Token 级可观测 | ✅ | `TokenUsageCallbackHandler` + `llm_token_usage` JSON 日志 |
+| 可选 Celery 报告 | ✅ | `CELERY_BROKER_URL` + `interview_simulator.generate_llm_report` |
+| 业务层 · 状态机 / 决策 / 记忆 | ✅ | `business_layer/*` |
+| 工程层 ①②③ | ✅ | FastAPI、Redis、Docker、JSON 日志、健康探针 |
+
+未设置 `JUDGE_API_KEY` 时自动回退 **HeuristicScorer**（中性分）与规则化报告。
+
+---
+
 ## 功能概览
 
 | 能力 | 说明 |
 |------|------|
-| 动态出题 | 基于 JD + 简历生成有逻辑、有深度的技术问题 |
-| 追问与纠偏 | 回答过浅或跑偏时自然追问；严重跑题时可切换问题 |
-| 结构化评估 | 技术正确性、表达清晰度、完整性等多维度打分 |
-| 最终报告 | 综合评分 + 可执行的改进建议 |
-| 会话与并发 | Redis 会话隔离；异步接口支撑多路面试 |
+| 动态出题 | 基于 JD + 简历，LangChain LCEL + CoT + Self-Critique 生成/改写问题 |
+| 追问与纠偏 | 低分追问、严重跑题换题、连续低分提前结束（规则 + FSM） |
+| 结构化评估 | LLM 三轴 1–5（`AnswerEvaluationAgent`），或由 `scores` 字段覆盖 |
+| 最终报告 | LLM 评估总结、优势、**可执行改进建议**、推荐学习主题 |
+| 流式出题 | SSE：`POST /interview/start/stream` |
+| Prompt 实验 | `zero_shot` / `few_shot` / `cot`（默认 `cot`） |
+| 会话与并发 | `REDIS_URL` 外置会话；`acompose` / 线程池异步出题；多实例可共享 Redis |
 
 ---
 
@@ -47,51 +72,44 @@ Requires-Dist: pytest-asyncio>=0.24.0; extra == "dev"
 
 ### 1. 模型能力层（Model Capability）
 
-**核心任务：** 出题 → 判题难度与相关性 → 评估回答 → 生成报告。
+**已实现：**
 
-**设计原则：** 避免「一轮 Prompt 包打天下」，采用 **Chain-of-Thought（CoT）+ Self-Critique** 等多步编排：
+1. 生成面试问题（`model_layer/chains.py` → `InterviewQuestionComposer`）  
+2. 自检难度与 JD/简历相关性（`QuestionCritique`）  
+3. 不足则自动改写问题（单次 rewrite）
 
-1. 生成面试问题  
-2. 自检：难度 / 挑战性是否足够  
-3. 不足则自动改写问题  
+**Prompt：** 当前主路径为 **CoT + Self-Critique**（`model_layer/prompts.py`）。Zero-shot / Few-shot 对比实验见 Roadmap。
 
-**Prompt 策略实验（可写进简历）：** Zero-shot / Few-shot / CoT / Self-ask 等对比，提升问题质量与评分一致性。
+**模型：** 默认智谱 **GLM**（`JUDGE_MODEL=glm-4`），经 `JUDGE_BASE_URL` OpenAI 兼容接口 + `langchain-openai` 调用。
 
-**模型可选：** GPT-4、Claude 3.5 Sonnet，或本地开源模型（如 Llama 3）。
+**多 Agent（`model_layer/agents.py`）：**
+
+| Agent | 类 | 职责 |
+|-------|-----|------|
+| Interviewer | `InterviewQuestionComposer` | 出题 + 自检 + 改写 |
+| Scorer | `AnswerEvaluationAgent` | 回答三轴评分 + `key_facts` |
+| Reporter | `InterviewReportAgent` | 面试结束深度报告 |
 
 ---
 
 ### 2. 业务逻辑层（Business Logic）
 
-**① 面试状态机**
+**① 面试状态机** ✅
 
-典型状态（可按实现微调命名）：`initial` → `questioning` → `waiting_for_answer` → `evaluating` → `follow_up` → `next_question` → `finalize`。
+状态：`initial` → `questioning` → `waiting_for_answer` → `evaluating` → `follow_up` | `next_question` → `finalize`。
 
-每个状态绑定不同的 Prompt、工具策略与分支逻辑。
+`prompt_lane_for_state()` 映射 `question_chain` / `evaluation_chain` / `follow_up_chain` / `report_chain`；评分与报告已接对应 Agent。
 
-**② 评分与决策模块（非简单加权）**
+**② 评分与决策模块** ✅
 
-对每轮回答做结构化评分，例如：
+- 技术深度 / 表达清晰度 / 相关性：各 1–5（`RoundScores`）  
+- 低分 → 追问（有上限）  
+- 严重跑题（`relevance` 过低）→ 换题  
+- 连续弱轮 → 提前 `finalize`（`EvaluationPolicy` 可配）
 
-- 技术深度：1–5  
-- 表达清晰度：1–5  
-- 与问题相关性：1–5  
+**③ 多轮记忆管理** ✅
 
-**动态决策示例：**
-
-- 分数偏低 → 是否追问  
-- 严重跑题 → 是否换题  
-- 连续多轮低分 → 是否提前结束面试  
-
-**③ 多轮记忆管理**
-
-不单靠堆满 `history`：采用 **摘要记忆 + 关键事实抽取**，控制 token、降低噪声。
-
-**④ 多 Agent（可选进阶）**
-
-- 主面试官 Agent：提问与节奏  
-- 评分 Agent：独立评估，减少「既当裁判又当选手」  
-- 提示 Agent：候选人卡住时适度提示，贴近真实面试  
+`InterviewMemory`：滚动摘要、关键事实列表、最近对话尾部；`materialize_context_block()` 供后续 prompt 注入。
 
 ---
 
@@ -100,113 +118,164 @@ Requires-Dist: pytest-asyncio>=0.24.0; extra == "dev"
 | 组件 | 用途 |
 |------|------|
 | **Python** | 主语言 |
-| **LangChain** | LCEL 编排、Memory、Chains、Runnables |
-| **FastAPI** | HTTP 服务与文档 |
-| **Pydantic** | 会话状态、得分、报告等强类型校验 |
-| **Redis** | 会话与缓存，支撑多轮、多候选人 |
-| **Docker** | 一键构建与部署 |
+| **LangChain** | LCEL 出题链 |
+| **FastAPI** | HTTP 服务与 OpenAPI |
+| **Pydantic** | API 与会话、得分模型 |
+| **Redis** | 可选会话持久化（`RedisSessionStore`） |
+| **Docker** | `Dockerfile` + `docker-compose.yml` |
 
-**工程层分三部分实施：**
+**工程 ① FastAPI 与 API 契约** ✅  
+HTTP、`/interview/*`、`InMemorySessionStore`（无 `REDIS_URL` 时）。
 
-1. **工程 ① FastAPI 与 API 契约**（已完成）：HTTP 服务、OpenAPI、`/interview/*` 与 `/healthz`、Pydantic 请求/响应模型、**进程内**会话存储（开发默认）；与状态机、决策、记忆、出题 Composer 串起来。  
-2. **工程 ② Redis 与异步强化**（已完成）：`SessionStore` 抽象、`REDIS_URL` 切换 `RedisSessionStore`、JSON 会话编解码、出题优先 `acompose` / `asyncio.to_thread` 回退、`BackgroundTasks` 审计日志、`/healthz` 含 Redis 探测。  
-3. **工程 ③ 可部署与可观测**：Docker / Compose、结构化日志（如 JSON Lines）、健康检查与集成测试强化。
+**工程 ② Redis 与异步强化** ✅  
+`SessionStore` 抽象、JSON 编解码、`acompose` / `asyncio.to_thread`、`BackgroundTasks` 审计。
 
-**工程要点：**
-
-- **自定义 Interview Agent**：`question_chain`、`evaluation_chain`、`follow_up_chain` 等与状态机协同  
-- **异步**：模型调用耗时可用 `asyncio` + `BackgroundTasks`；规模更大时可引入 Celery  
-- **可观测性**：记录每次调用的 prompt / response / token；结构化日志（如 JSON Lines）便于分析与调参  
-- **测试**：状态机与评分规则单元测试；端到端集成测试；固定 seed + 温度 0 做输出稳定性回归  
+**工程 ③ 可部署与可观测** ✅  
+Docker Compose、JSON Lines 日志（`LOG_FORMAT=json`）、请求中间件、`/healthz` + `/readyz`、集成测试。
 
 ---
 
-## API 设计（示例）
-
-与服务实现保持一致即可，以下为常见划分：
+## API
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `POST` | `/interview/start` | 创建会话（JD、简历、维度配置等） |
-| `POST` | `/interview/ask` | 提交候选人回答，返回下一问 / 追问 / 阶段性反馈 |
-| `GET` | `/interview/status/{id}` | 当前阶段与状态机快照 |
-| `GET` | `/interview/report/{id}` | 最终评分与结构化报告 |
+| `POST` | `/interview/start` | 创建会话；`prompt_strategy`、`evaluation_policy` |
+| `POST` | `/interview/start/stream` | SSE 流式输出首题，结束时 `type: done` 含 `session_id` |
+| `POST` | `/interview/ask` | 提交回答；省略 `scores` 时走 LLM 评分（`USE_LLM_SCORING`） |
+| `GET` | `/interview/status/{id}` | 状态机快照 + 记忆；`report_ready` |
+| `GET` | `/interview/report/{id}` | LLM 报告：评估、优势、改进建议、学习主题（未结束 409） |
+| `GET` | `/healthz` | 存活探测 |
+| `GET` | `/readyz` | 就绪探测（Redis 不可达时 503） |
+
+交互示例见 `tests/test_integration.py`。
 
 ---
 
-## 快速开始（规划）
+## 项目结构
 
-### 环境变量（示例）
-
-```bash
-OPENAI_API_KEY=your_key
-REDIS_URL=redis://localhost:6379/0
+```
+src/interview_simulator/
+├── model_layer/          # interviewer / scorer / reporter + 可观测 + SSE
+├── business_layer/       # FSM、决策、记忆
+└── engineering/          # FastAPI、Redis、Celery、日志、健康检查
+tests/                    # 单元 / API / 集成（test_fakes 无需 API Key）
+Dockerfile
+docker-compose.yml
 ```
 
-### 本地启动 API（工程 ① 已实现）
+---
+
+## 快速开始
+
+### 环境变量
+
+复制 `.env.example` 为 `.env` 后按需修改：
+
+```bash
+JUDGE_API_KEY=your_zhipu_api_key
+JUDGE_BASE_URL=https://open.bigmodel.cn/api/paas/v4/
+JUDGE_MODEL=glm-4
+USE_LLM_SCORING=true
+USE_LLM_REPORT=true
+# 不设 REDIS_URL → 单进程内存会话
+# REDIS_URL=redis://localhost:6379/0
+SESSION_TTL_SECONDS=86400
+# CELERY_BROKER_URL=redis://localhost:6379/1   # 可选：后台预生成报告
+LOG_FORMAT=text          # 或 json
+LOG_LEVEL=INFO
+```
+
+### 安装与测试
+
+```bash
+python -m pip install -e ".[dev]"
+python -m pytest -q
+```
+
+### 本地启动 API
 
 ```bash
 python -m pip install -e .
-export OPENAI_API_KEY=...   # Windows: set OPENAI_API_KEY=...
+# Windows: set JUDGE_API_KEY=...
+# Linux/macOS: export JUDGE_API_KEY=...
 interview-api
-# 或: python -m uvicorn interview_simulator.engineering.app:create_app --factory --host 0.0.0.0 --port 8000
+# 或:
+# python -m uvicorn interview_simulator.engineering.app:create_app --factory --host 0.0.0.0 --port 8000
 ```
 
-文档：`http://127.0.0.1:8000/docs`  
+OpenAPI：`http://127.0.0.1:8000/docs`
 
-### Redis 会话（工程 ②）
-
-未设置 `REDIS_URL` 时使用进程内存储；多实例 / 生产请启动 Redis 并配置：
+### Redis 会话（多实例）
 
 ```bash
 export REDIS_URL=redis://localhost:6379/0
-export SESSION_TTL_SECONDS=86400   # 可选，默认 86400
 interview-api
 ```
 
-`/healthz` 在 Redis 模式下返回 `backend: redis` 与 `redis: true/false`。
+`/healthz`：`backend` 为 `memory` 或 `redis`；`/readyz` 在 Redis 模式下要求 ping 成功。
 
-### Docker（规划）
+### Docker
 
 ```bash
+# 根目录 .env 至少包含 JUDGE_API_KEY
 docker compose up --build
 ```
 
-具体 `Dockerfile` / `docker-compose.yml` 以实现为准（工程 ③）。
+- API：`http://localhost:8000`  
+- Redis：`localhost:6379`（容器内 `redis://redis:6379/0`）
+
+### 可观测性
+
+| 变量 | 说明 |
+|------|------|
+| `LOG_FORMAT` | `text`（默认）或 `json` / `jsonl` |
+| `LOG_LEVEL` | `INFO`、`DEBUG` 等 |
+
+Compose 默认 `LOG_FORMAT=json`。日志字段含 `request_id`、`duration_ms`、`audit_event`、`session_id` 等。
 
 ---
 
-## 简历表述参考（可直接微调数字与成果）
+## 简历表述参考（可直接微调）
 
 **项目名称：** 智能面试 Agent —— 基于 LangChain 的多轮情境面试系统  
 
-**技术栈：** Python, LangChain, FastAPI, Redis, Docker, OpenAI GPT-4（或实际所用模型）
+**技术栈：** Python, LangChain, FastAPI, Redis, Docker, 智谱 GLM（OpenAI 兼容 API）
 
 **核心贡献：**
 
-- **模型层：** 设计 Chain-of-Thought + Self-Critique 提示策略，对比多种 Prompt 方案，提升问题难度与评分一致性（可量化自测指标）。  
-- **逻辑层：** 基于有限状态机控制面试流程，支持动态追问、提前终止、多维度结构化评分，非简单对话循环。  
-- **工程层：** FastAPI 服务化，LangChain LCEL 编排，Redis 管理会话，异步并发与 Docker 部署。  
+- **模型层：** CoT + Self-Critique 出题链；自检难度与相关性并自动改写。  
+- **逻辑层：** 有限状态机 + 三轴评分决策（追问 / 换题 / 提前结束）+ 摘要记忆。  
+- **工程层：** FastAPI 服务化、Redis 会话、异步出题、Docker 与 JSON 可观测性。
 
-**成果（按实测填写）：** 完成多轮模拟面试与结构化报告输出，可作为独立微服务接入招聘或教学平台。
+**成果（按实测填写）：** 多轮模拟面试 API、结构化回合报告，可作为微服务接入招聘或教学平台。
 
 ---
 
 ## 可选加分项（Roadmap）
 
-- **流式输出：** SSE 或 WebSocket，模拟面试官逐字输出  
-- **多候选人并行：** 会话隔离 + 资源与配额控制  
-- **评估校准：** 少量人工标注数据优化评分 Prompt  
-- **成本控制：** 简单轮次用小模型，复杂推理用大模型  
+- **提示 Agent：** 候选人卡住时的适度提示  
+- **评估校准：** 人工标注数据优化评分 Prompt  
+- **成本控制：** 简单轮次小模型、复杂轮次大模型  
+- **多租户配额、WebSocket、评估雷达图可视化**
+
+### Celery Worker（可选）
+
+```bash
+pip install -e ".[worker]"
+# .env 中设置 CELERY_BROKER_URL=redis://localhost:6379/1
+celery -A interview_simulator.engineering.celery_app:get_celery_app worker -l info
+```
+
+面试结束后若配置 Broker，会异步执行 `interview_simulator.generate_llm_report`；否则由 `BackgroundTasks` / `GET /report` 同步生成。
 
 ---
 
 ## 许可证
 
-以仓库内 `LICENSE` 为准（若尚未添加，请按需补充）。
+[MIT License](LICENSE)
 
 ---
 
 ## 说明
 
-本项目强调 **「LangChain + FastAPI + 状态机 + 服务化」** 的组合：体现真实业务编排与工程落地能力，而非仅调用大模型 API。
+本项目强调 **「多 Agent + LangChain + FastAPI + 状态机 + Redis/Docker」** 的完整业务编排；测试默认使用 `tests/test_fakes.py` 中的 Fake Agent，无需真实 API Key。

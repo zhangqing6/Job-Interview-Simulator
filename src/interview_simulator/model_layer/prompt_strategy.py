@@ -19,6 +19,8 @@ ZERO_SHOT_GENERATION_SYSTEM = """You are a senior technical interviewer.
 Produce ONE focused technical interview question from the JD and resume.
 Output structured fields only; keep `question_text` free of meta-commentary.
 Do not include chain-of-thought in the candidate-facing question text beyond the structured `chain_of_thought` field.
+
+{language_rule}
 """
 
 

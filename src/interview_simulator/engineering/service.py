@@ -23,11 +23,13 @@ from interview_simulator.business_layer.schemas import EvaluationPolicy
 from interview_simulator.engineering.api_schemas import (
     CompletedRoundDTO,
     InterviewAskResponse,
+    InterviewLanguage,
     InterviewReportResponse,
     InterviewStartResponse,
     InterviewStatusResponse,
     PromptStrategy,
 )
+from interview_simulator.model_layer.language import follow_up_dimension
 from interview_simulator.engineering.celery_app import dispatch_report_task
 from interview_simulator.engineering.store_protocol import SessionStore
 from interview_simulator.model_layer.agents import InterviewAgentOrchestrator
@@ -48,6 +50,7 @@ class SessionRecord:
     current_question: str = ""
     completed_rounds: list[CompletedRoundDTO] = field(default_factory=list)
     prompt_strategy: PromptStrategy = "cot"
+    interview_language: InterviewLanguage = "zh"
     llm_report: InterviewLLMReport | None = None
     report_pending: bool = False
 
@@ -72,6 +75,7 @@ class InterviewHttpService:
         expected_depth: Literal["junior", "mid", "senior"],
         evaluation_policy: EvaluationPolicy | None,
         prompt_strategy: PromptStrategy = "cot",
+        interview_language: InterviewLanguage = "zh",
     ) -> InterviewStartResponse:
         sid = str(uuid.uuid4())
         policy = evaluation_policy or EvaluationPolicy()
@@ -87,6 +91,7 @@ class InterviewHttpService:
             memory_config=MemoryConfig(),
             fsm=fsm,
             prompt_strategy=prompt_strategy,
+            interview_language=interview_language,
         )
         q = await self._compose_question(session, dimension=session.interview_dimension)
         session.current_question = q
@@ -100,6 +105,7 @@ class InterviewHttpService:
             prompt_lane=prompt_lane_for_state(ctx.state),
             current_question=q,
             prompt_strategy=prompt_strategy,
+            interview_language=interview_language,
         )
 
     async def ask(
@@ -180,9 +186,7 @@ class InterviewHttpService:
             )
 
         if event is InterviewEvent.EVAL_FOLLOW_UP:
-            dim = (
-                f"Follow-up in the same thread as the prior question. Prior question:\n{session.current_question}"
-            )
+            dim = follow_up_dimension(session.interview_language, session.current_question)
             fq = await self._compose_question(session, dimension=dim)
             session.current_question = fq
             session.fsm.apply(InterviewEvent.FOLLOW_UP_PREPARED)
@@ -248,6 +252,7 @@ class InterviewHttpService:
                 resume=session.resume,
                 memory_context=session.memory.materialize_context_block(),
                 rounds=session.completed_rounds,
+                interview_language=session.interview_language,
             )
             if llm is not None:
                 session.llm_report = llm
@@ -274,6 +279,7 @@ class InterviewHttpService:
                 resume=session.resume,
                 question=session.current_question,
                 answer=answer,
+                interview_language=session.interview_language,
             )
             if eval_result.key_facts:
                 session.memory.add_key_facts(eval_result.key_facts, config=session.memory_config)
@@ -284,6 +290,7 @@ class InterviewHttpService:
             resume=session.resume,
             question=session.current_question,
             answer=answer,
+            interview_language=session.interview_language,
         )
         return eval_result.to_round_scores(), "heuristic", eval_result.reasoning
 
@@ -300,6 +307,7 @@ class InterviewHttpService:
             dimension=dimension,
             expected_depth=session.expected_depth,
             prompt_strategy=session.prompt_strategy,
+            interview_language=session.interview_language,
         )
         return result.final_question.strip()
 
@@ -332,11 +340,18 @@ def _build_report_response(session: SessionRecord) -> InterviewReportResponse:
 
 def _closing_summary(session: SessionRecord) -> str:
     if not session.completed_rounds:
-        return "Interview completed with no recorded rounds."
+        return (
+            "面试结束，无有效答题记录。"
+            if session.interview_language == "zh"
+            else "Interview completed with no recorded rounds."
+        )
     last = session.completed_rounds[-1].scores
     avg = (last.technical_depth + last.clarity + last.relevance) / 3.0
+    n = len(session.completed_rounds)
+    if session.interview_language == "zh":
+        return f"面试结束，共记录 {n} 轮作答，最后一轮均分 {avg:.2f} / 5。"
     return (
-        f"Interview completed across {len(session.completed_rounds)} recorded turn(s). "
+        f"Interview completed across {n} recorded turn(s). "
         f"Last answer average score: {avg:.2f} / 5."
     )
 

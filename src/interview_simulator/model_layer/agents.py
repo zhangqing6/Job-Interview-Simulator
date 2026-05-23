@@ -6,10 +6,15 @@ import os
 from typing import Any, Literal, Protocol
 
 from interview_simulator.business_layer.schemas import RoundScores
+from interview_simulator.model_layer.language import InterviewLanguage
 from interview_simulator.model_layer.chains import InterviewQuestionComposer
 from interview_simulator.model_layer.evaluation_chain import AnswerEvaluationAgent
 from interview_simulator.model_layer.evaluation_schemas import AnswerEvaluationResult
-from interview_simulator.model_layer.llm_factory import llm_enabled
+from interview_simulator.model_layer.llm_factory import (
+    is_llm_report_enabled,
+    is_llm_scoring_enabled,
+    llm_enabled,
+)
 from interview_simulator.model_layer.report_chain import InterviewReportAgent
 from interview_simulator.model_layer.report_schemas import InterviewLLMReport
 from interview_simulator.model_layer.schemas import QuestionComposerResult
@@ -23,6 +28,7 @@ class ScorerLike(Protocol):
         resume: str,
         question: str,
         answer: str,
+        interview_language: InterviewLanguage = "zh",
     ) -> AnswerEvaluationResult: ...
 
 
@@ -34,6 +40,7 @@ class ReporterLike(Protocol):
         resume: str,
         memory_context: str,
         rounds: list[Any],
+        interview_language: InterviewLanguage = "zh",
     ) -> InterviewLLMReport: ...
 
 
@@ -47,13 +54,19 @@ class HeuristicScorer:
         resume: str,
         question: str,
         answer: str,
+        interview_language: InterviewLanguage = "zh",
     ) -> AnswerEvaluationResult:
         _ = (job_description, resume, question, answer)
+        reasoning = (
+            "启发式中性评分（未启用 LLM 评分）。"
+            if interview_language == "zh"
+            else "Heuristic neutral scores (LLM scoring off)."
+        )
         return AnswerEvaluationResult(
             technical_depth=3,
             clarity=3,
             relevance=3,
-            reasoning="Heuristic neutral scores (LLM scoring off).",
+            reasoning=reasoning,
             key_facts=[],
         )
 
@@ -78,8 +91,8 @@ class InterviewAgentOrchestrator:
         use_llm_report: bool | None = None,
     ) -> None:
         llm_on = llm_enabled()
-        score_on = use_llm_scoring if use_llm_scoring is not None else _env_bool("USE_LLM_SCORING", llm_on)
-        report_on = use_llm_report if use_llm_report is not None else _env_bool("USE_LLM_REPORT", llm_on)
+        score_on = use_llm_scoring if use_llm_scoring is not None else is_llm_scoring_enabled()
+        report_on = use_llm_report if use_llm_report is not None else is_llm_report_enabled()
 
         self.interviewer = interviewer or InterviewQuestionComposer()
         if scorer is not None:
@@ -108,6 +121,7 @@ class InterviewAgentOrchestrator:
         dimension: str,
         expected_depth: Literal["junior", "mid", "senior"],
         prompt_strategy: Literal["zero_shot", "few_shot", "cot"] = "cot",
+        interview_language: InterviewLanguage = "zh",
     ) -> QuestionComposerResult:
         if hasattr(self.interviewer, "acompose"):
             return await self.interviewer.acompose(
@@ -116,6 +130,7 @@ class InterviewAgentOrchestrator:
                 dimension=dimension,
                 expected_depth=expected_depth,
                 prompt_strategy=prompt_strategy,
+                interview_language=interview_language,
             )
         import asyncio
 
@@ -126,6 +141,7 @@ class InterviewAgentOrchestrator:
             dimension=dimension,
             expected_depth=expected_depth,
             prompt_strategy=prompt_strategy,
+            interview_language=interview_language,
         )
 
     async def score_answer(
@@ -135,12 +151,14 @@ class InterviewAgentOrchestrator:
         resume: str,
         question: str,
         answer: str,
+        interview_language: InterviewLanguage = "zh",
     ) -> AnswerEvaluationResult:
         return await self.scorer.ascore(
             job_description=job_description,
             resume=resume,
             question=question,
             answer=answer,
+            interview_language=interview_language,
         )
 
     async def build_report(
@@ -150,6 +168,7 @@ class InterviewAgentOrchestrator:
         resume: str,
         memory_context: str,
         rounds: list[Any],
+        interview_language: InterviewLanguage = "zh",
     ) -> InterviewLLMReport | None:
         if self.reporter is None:
             return None
@@ -158,6 +177,7 @@ class InterviewAgentOrchestrator:
             resume=resume,
             memory_context=memory_context,
             rounds=rounds,
+            interview_language=interview_language,
         )
 
 

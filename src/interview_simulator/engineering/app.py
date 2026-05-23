@@ -5,10 +5,12 @@ from __future__ import annotations
 import json
 import uuid
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Response
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
 from interview_simulator.business_layer import InterviewEvent, InterviewStateMachine, MemoryConfig, TurnRecord
 from interview_simulator.business_layer.schemas import EvaluationPolicy
@@ -31,6 +33,8 @@ from interview_simulator.engineering.tasks import audit_session_event
 from interview_simulator.model_layer.agents import InterviewAgentOrchestrator, ReporterLike, ScorerLike
 from interview_simulator.model_layer.chains import InterviewQuestionComposer, load_dotenv_if_present
 from interview_simulator.model_layer.streaming import astream_question_tokens, sse_encode
+
+_STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 
 def create_app(
@@ -75,6 +79,13 @@ def create_app(
     if enable_request_logging:
         app.add_middleware(RequestLoggingMiddleware)
 
+    if _STATIC_DIR.is_dir():
+        app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
+
+        @app.get("/", include_in_schema=False)
+        async def interview_ui() -> FileResponse:
+            return FileResponse(_STATIC_DIR / "index.html")
+
     def get_service() -> InterviewHttpService:
         return service
 
@@ -100,13 +111,18 @@ def create_app(
             expected_depth=body.expected_depth,
             evaluation_policy=body.evaluation_policy,
             prompt_strategy=body.prompt_strategy,
+            interview_language=body.interview_language,
         )
         background_tasks.add_task(
             audit_session_event,
             st,
             resp.session_id,
             event="start",
-            extra={"state": resp.state, "prompt_strategy": body.prompt_strategy},
+            extra={
+                "state": resp.state,
+                "prompt_strategy": body.prompt_strategy,
+                "interview_language": body.interview_language,
+            },
         )
         return resp
 
@@ -131,6 +147,7 @@ def create_app(
             memory_config=MemoryConfig(),
             fsm=fsm,
             prompt_strategy=body.prompt_strategy,
+            interview_language=body.interview_language,
         )
 
         async def event_gen():
@@ -142,6 +159,7 @@ def create_app(
                     dimension=session.interview_dimension,
                     expected_depth=session.expected_depth,
                     prompt_strategy=body.prompt_strategy,
+                    interview_language=body.interview_language,
                 ):
                     buffer.append(token)
                     yield sse_encode("token", {"text": token})
@@ -151,7 +169,11 @@ def create_app(
 
             question = "".join(buffer).strip()
             if not question:
-                question = "Please describe a recent technical challenge you solved."
+                question = (
+                    "请描述你最近解决过的一个技术难题。"
+                    if body.interview_language == "zh"
+                    else "Please describe a recent technical challenge you solved."
+                )
             session.current_question = question
             session.fsm.apply(InterviewEvent.QUESTION_PREPARED)
             session.memory.append_turn(

@@ -21,6 +21,7 @@ class FakeComposer:
         dimension: str,
         expected_depth: Literal["junior", "mid", "senior"],
         prompt_strategy: Literal["zero_shot", "few_shot", "cot"] = "cot",
+        **_: Any,
     ) -> QuestionComposerResult:
         self._n += 1
         q = f"Q{self._n}: ({expected_depth}) {dimension[:40]}"
@@ -47,6 +48,7 @@ class FakeComposer:
         dimension: str,
         expected_depth: Literal["junior", "mid", "senior"],
         prompt_strategy: Literal["zero_shot", "few_shot", "cot"] = "cot",
+        **_: Any,
     ) -> QuestionComposerResult:
         return self.compose(
             job_description,
@@ -65,6 +67,7 @@ class FakeScorer:
         resume: str,
         question: str,
         answer: str,
+        **_: Any,
     ) -> AnswerEvaluationResult:
         _ = (job_description, resume, question)
         depth = 5 if len(answer) > 20 else 2
@@ -85,6 +88,7 @@ class FakeReporter:
         resume: str,
         memory_context: str,
         rounds: list[Any],
+        **_: Any,
     ) -> InterviewLLMReport:
         _ = (job_description, resume, memory_context)
         n = len(rounds)

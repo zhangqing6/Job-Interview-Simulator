@@ -52,4 +52,14 @@ class TurnRecord(BaseModel):
     text: str = Field(..., description="Utterance text (may be truncated upstream).")
 
 
-__all__ = ["EvaluationPolicy", "RoundScores", "TurnRecord"]
+class CompletedRoundDTO(BaseModel):
+    """One completed Q/A turn with scores (shared by API, service, and report agent)."""
+
+    main_round_index: int
+    follow_ups_in_round_at_submit: int
+    question: str
+    answer: str
+    scores: RoundScores
+
+
+__all__ = ["CompletedRoundDTO", "EvaluationPolicy", "RoundScores", "TurnRecord"]

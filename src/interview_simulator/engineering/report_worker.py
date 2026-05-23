@@ -22,6 +22,7 @@ async def run_report_for_session(session_id: str) -> None:
             resume=session.resume,
             memory_context=session.memory.materialize_context_block(),
             rounds=session.completed_rounds,
+            interview_language=session.interview_language,
         )
         if report is not None:
             session.llm_report = report

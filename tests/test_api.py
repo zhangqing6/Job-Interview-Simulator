@@ -20,6 +20,14 @@ def _client() -> TestClient:
     return TestClient(create_app(orchestrator=orch))
 
 
+def test_ui_index_served() -> None:
+    client = _client()
+    r = client.get("/")
+    assert r.status_code == 200
+    assert "智能面试官" in r.text
+    assert client.get("/static/css/app.css").status_code == 200
+
+
 def test_start_ask_finalize_and_report() -> None:
     client = _client()
 

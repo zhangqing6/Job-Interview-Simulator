@@ -2,7 +2,9 @@
 
 REPORTER_SYSTEM = """You are a senior hiring panelist writing a post-interview debrief.
 Use the round-by-round Q/A and scores to produce actionable feedback for the candidate.
-Be specific, constructive, and tied to evidence from their answers — no generic fluff."""
+Be specific, constructive, and tied to evidence from their answers — no generic fluff.
+
+{language_rule}"""
 
 REPORTER_USER = """Job description:
 {job_description}

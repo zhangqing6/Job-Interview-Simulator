@@ -27,7 +27,7 @@
 | 业务层 · 状态机 / 决策 / 记忆 | ✅ | `business_layer/*` |
 | 工程层 ①②③ | ✅ | FastAPI、Redis、Docker、JSON 日志、健康探针 |
 
-未设置 `OPENAI_API_KEY` 时自动回退 **HeuristicScorer**（中性分）与规则化报告。
+未设置 `JUDGE_API_KEY` 时自动回退 **HeuristicScorer**（中性分）与规则化报告。
 
 ---
 
@@ -36,6 +36,7 @@
 | 能力 | 说明 |
 |------|------|
 | 动态出题 | 基于 JD + 简历，LangChain LCEL + CoT + Self-Critique 生成/改写问题 |
+| 面试语言 | `interview_language`: `zh`（中文）/ `en`（英文），题目、追问、评分评语与报告随会话一致 |
 | 追问与纠偏 | 低分追问、严重跑题换题、连续低分提前结束（规则 + FSM） |
 | 结构化评估 | LLM 三轴 1–5（`AnswerEvaluationAgent`），或由 `scores` 字段覆盖 |
 | 最终报告 | LLM 评估总结、优势、**可执行改进建议**、推荐学习主题 |
@@ -57,7 +58,7 @@
 
 **Prompt：** 当前主路径为 **CoT + Self-Critique**（`model_layer/prompts.py`）。Zero-shot / Few-shot 对比实验见 Roadmap。
 
-**模型：** 默认 `OPENAI_MODEL`（如 `gpt-4o-mini`），通过 `langchain-openai` 调用；可替换为其他 LangChain Chat 模型适配器。
+**模型：** 默认智谱 **GLM**（`JUDGE_MODEL=glm-4`），经 `JUDGE_BASE_URL` OpenAI 兼容接口 + `langchain-openai` 调用。
 
 **多 Agent（`model_layer/agents.py`）：**
 
@@ -149,12 +150,13 @@ docker-compose.yml
 复制 `.env.example` 为 `.env` 后按需修改：
 
 ```bash
-OPENAI_API_KEY=your_key
-OPENAI_MODEL=gpt-4o-mini
+JUDGE_API_KEY=your_zhipu_api_key
+JUDGE_BASE_URL=https://open.bigmodel.cn/api/paas/v4/
+JUDGE_MODEL=glm-4
 USE_LLM_SCORING=true
 USE_LLM_REPORT=true
 # 不设 REDIS_URL → 单进程内存会话
-REDIS_URL=redis://localhost:6379/0
+# REDIS_URL=redis://localhost:6379/0
 SESSION_TTL_SECONDS=86400
 # CELERY_BROKER_URL=redis://localhost:6379/1   # 可选：后台预生成报告
 LOG_FORMAT=text          # 或 json
@@ -172,14 +174,16 @@ python -m pytest -q
 
 ```bash
 python -m pip install -e .
-# Windows: set OPENAI_API_KEY=...
-# Linux/macOS: export OPENAI_API_KEY=...
+# Windows: set JUDGE_API_KEY=...
+# Linux/macOS: export JUDGE_API_KEY=...
 interview-api
 # 或:
 # python -m uvicorn interview_simulator.engineering.app:create_app --factory --host 0.0.0.0 --port 8000
 ```
 
 OpenAPI：`http://127.0.0.1:8000/docs`
+
+**Web 界面（推荐上手）：** 启动 API 后浏览器打开 `http://127.0.0.1:8000/` — 填写 JD / 简历、答题、查看评分与报告，无需手写 curl。
 
 ### Redis 会话（多实例）
 
@@ -193,7 +197,7 @@ interview-api
 ### Docker
 
 ```bash
-# 根目录 .env 至少包含 OPENAI_API_KEY
+# 根目录 .env 至少包含 JUDGE_API_KEY
 docker compose up --build
 ```
 
@@ -215,7 +219,7 @@ Compose 默认 `LOG_FORMAT=json`。日志字段含 `request_id`、`duration_ms`�
 
 **项目名称：** 智能面试 Agent —— 基于 LangChain 的多轮情境面试系统  
 
-**技术栈：** Python, LangChain, FastAPI, Redis, Docker, OpenAI API
+**技术栈：** Python, LangChain, FastAPI, Redis, Docker, 智谱 GLM（OpenAI 兼容 API）
 
 **核心贡献：**
 

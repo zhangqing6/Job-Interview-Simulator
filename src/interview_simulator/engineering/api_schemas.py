@@ -6,10 +6,15 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from interview_simulator.business_layer.schemas import EvaluationPolicy, RoundScores
+from interview_simulator.business_layer.schemas import (
+    CompletedRoundDTO,
+    EvaluationPolicy,
+    RoundScores,
+)
 
 
 PromptStrategy = Literal["zero_shot", "few_shot", "cot"]
+InterviewLanguage = Literal["zh", "en"]
 
 
 class InterviewStartRequest(BaseModel):
@@ -32,6 +37,10 @@ class InterviewStartRequest(BaseModel):
         False,
         description="If true, use POST /interview/start/stream for SSE token stream.",
     )
+    interview_language: InterviewLanguage = Field(
+        "zh",
+        description="Language for questions, follow-ups, scoring reasoning, and report text (zh | en).",
+    )
 
 
 class InterviewStartResponse(BaseModel):
@@ -40,6 +49,7 @@ class InterviewStartResponse(BaseModel):
     prompt_lane: str
     current_question: str
     prompt_strategy: PromptStrategy = "cot"
+    interview_language: InterviewLanguage = "zh"
     scores_source: str | None = None
 
 
@@ -81,14 +91,6 @@ class InterviewStatusResponse(BaseModel):
     report_ready: bool = False
 
 
-class CompletedRoundDTO(BaseModel):
-    main_round_index: int
-    follow_ups_in_round_at_submit: int
-    question: str
-    answer: str
-    scores: RoundScores
-
-
 class InterviewReportResponse(BaseModel):
     session_id: str
     state: str
@@ -104,6 +106,7 @@ class InterviewReportResponse(BaseModel):
 
 __all__ = [
     "CompletedRoundDTO",
+    "InterviewLanguage",
     "InterviewAskRequest",
     "InterviewAskResponse",
     "InterviewReportResponse",
