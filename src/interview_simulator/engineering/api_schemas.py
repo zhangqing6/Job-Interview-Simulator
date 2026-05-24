@@ -20,9 +20,12 @@ InterviewLanguage = Literal["zh", "en"]
 class InterviewStartRequest(BaseModel):
     job_description: str = Field(..., min_length=1)
     resume: str = Field(..., min_length=1)
-    interview_dimension: str = Field(
-        "technical depth",
-        description="Focus hint passed to the question composer.",
+    interview_dimension: str | None = Field(
+        default=None,
+        description=(
+            "Optional focus (e.g. distributed systems). "
+            "If omitted or blank, the composer infers a topic from JD + resume."
+        ),
     )
     expected_depth: Literal["junior", "mid", "senior"] = "mid"
     evaluation_policy: EvaluationPolicy | None = Field(

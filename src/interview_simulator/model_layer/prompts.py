@@ -24,9 +24,11 @@ Candidate resume (may be long; focus on relevant parts):
 {resume}
 
 Interview dimension / focus for this turn: {dimension}
+(If the focus says no dimension was specified, infer the best topic from JD + resume for this question.)
 Target depth band: {expected_depth}
 
 Produce one next interview question as structured output.
+Respect the target depth band and the active prompt strategy (CoT / few-shot / zero-shot path).
 Required JSON keys: chain_of_thought, question_text, expected_depth (must be one of junior|mid|senior, match the target depth band above)."""
 
 CRITIQUE_SYSTEM = """You are a strict but fair peer reviewer for technical interview questions.

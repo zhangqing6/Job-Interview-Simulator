@@ -33,7 +33,12 @@ from interview_simulator.model_layer.language import follow_up_dimension
 from interview_simulator.engineering.celery_app import dispatch_report_task
 from interview_simulator.engineering.store_protocol import SessionStore
 from interview_simulator.model_layer.agents import InterviewAgentOrchestrator
+from interview_simulator.model_layer.dimension import (
+    dimension_focus_for_prompt,
+    normalize_interview_dimension,
+)
 from interview_simulator.model_layer.report_schemas import InterviewLLMReport
+from interview_simulator.model_layer.score_alignment import PriorRound
 
 
 @dataclass
@@ -41,11 +46,11 @@ class SessionRecord:
     session_id: str
     job_description: str
     resume: str
-    interview_dimension: str
     expected_depth: Literal["junior", "mid", "senior"]
     policy: EvaluationPolicy
     memory_config: MemoryConfig
     fsm: InterviewStateMachine
+    interview_dimension: str | None = None
     memory: InterviewMemory = field(default_factory=InterviewMemory)
     current_question: str = ""
     completed_rounds: list[CompletedRoundDTO] = field(default_factory=list)
@@ -71,7 +76,7 @@ class InterviewHttpService:
         *,
         job_description: str,
         resume: str,
-        interview_dimension: str,
+        interview_dimension: str | None,
         expected_depth: Literal["junior", "mid", "senior"],
         evaluation_policy: EvaluationPolicy | None,
         prompt_strategy: PromptStrategy = "cot",
@@ -85,7 +90,7 @@ class InterviewHttpService:
             session_id=sid,
             job_description=job_description.strip(),
             resume=resume.strip(),
-            interview_dimension=interview_dimension,
+            interview_dimension=normalize_interview_dimension(interview_dimension),
             expected_depth=expected_depth,
             policy=policy,
             memory_config=MemoryConfig(),
@@ -93,7 +98,7 @@ class InterviewHttpService:
             prompt_strategy=prompt_strategy,
             interview_language=interview_language,
         )
-        q = await self._compose_question(session, dimension=session.interview_dimension)
+        q = await self._compose_question(session)
         session.current_question = q
         session.fsm.apply(InterviewEvent.QUESTION_PREPARED)
         session.memory.append_turn(TurnRecord(role="interviewer", text=q), config=session.memory_config)
@@ -187,7 +192,7 @@ class InterviewHttpService:
 
         if event is InterviewEvent.EVAL_FOLLOW_UP:
             dim = follow_up_dimension(session.interview_language, session.current_question)
-            fq = await self._compose_question(session, dimension=dim)
+            fq = await self._compose_question(session, dimension_override=dim)
             session.current_question = fq
             session.fsm.apply(InterviewEvent.FOLLOW_UP_PREPARED)
             session.memory.append_turn(TurnRecord(role="interviewer", text=fq), config=session.memory_config)
@@ -206,7 +211,7 @@ class InterviewHttpService:
             )
 
         session.fsm.apply(InterviewEvent.BEGIN_PREPARE_NEXT)
-        nq = await self._compose_question(session, dimension=session.interview_dimension)
+        nq = await self._compose_question(session)
         session.current_question = nq
         session.fsm.apply(InterviewEvent.QUESTION_PREPARED)
         session.memory.append_turn(TurnRecord(role="interviewer", text=nq), config=session.memory_config)
@@ -272,6 +277,9 @@ class InterviewHttpService:
         if client_scores is not None:
             return client_scores, "client", None
 
+        prior = [
+            PriorRound(question=r.question, answer=r.answer) for r in session.completed_rounds
+        ]
         llm_on = self._orch.use_llm_scoring if use_llm_scoring is None else use_llm_scoring
         if llm_on:
             eval_result = await self._orch.score_answer(
@@ -280,6 +288,7 @@ class InterviewHttpService:
                 question=session.current_question,
                 answer=answer,
                 interview_language=session.interview_language,
+                prior_rounds=prior,
             )
             if eval_result.key_facts:
                 session.memory.add_key_facts(eval_result.key_facts, config=session.memory_config)
@@ -291,6 +300,7 @@ class InterviewHttpService:
             question=session.current_question,
             answer=answer,
             interview_language=session.interview_language,
+            prior_rounds=prior,
         )
         return eval_result.to_round_scores(), "heuristic", eval_result.reasoning
 
@@ -300,11 +310,20 @@ class InterviewHttpService:
         session.report_pending = True
         dispatch_report_task(session.session_id)
 
-    async def _compose_question(self, session: SessionRecord, *, dimension: str) -> str:
+    async def _compose_question(
+        self,
+        session: SessionRecord,
+        *,
+        dimension_override: str | None = None,
+    ) -> str:
+        focus = dimension_override or dimension_focus_for_prompt(
+            session.interview_dimension,
+            interview_language=session.interview_language,
+        )
         result = await self._orch.compose_question(
             session.job_description,
             session.resume,
-            dimension=dimension,
+            dimension=focus,
             expected_depth=session.expected_depth,
             prompt_strategy=session.prompt_strategy,
             interview_language=session.interview_language,

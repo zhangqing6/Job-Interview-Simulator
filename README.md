@@ -27,7 +27,7 @@
 | 业务层 · 状态机 / 决策 / 记忆 | ✅ | `business_layer/*` |
 | 工程层 ①②③ | ✅ | FastAPI、Redis、Docker、JSON 日志、健康探针 |
 
-未设置 `JUDGE_API_KEY` 时自动回退 **HeuristicScorer**（中性分）与规则化报告。
+未设置 `JUDGE_API_KEY` 时自动回退 **HeuristicScorer**（按题干–答案对齐的 1–5 启发式评分，含重复套话惩罚）与规则化报告。
 
 ---
 
@@ -37,6 +37,7 @@
 |------|------|
 | 动态出题 | 基于 JD + 简历，LangChain LCEL + CoT + Self-Critique 生成/改写问题 |
 | 面试语言 | `interview_language`: `zh`（中文）/ `en`（英文），题目、追问、评分评语与报告随会话一致 |
+| 面试维度（选填） | 填写则按该维度出题；留空则由 JD + 简历自动推断考察方向（仍受 `expected_depth` 与 `prompt_strategy` 影响） |
 | 追问与纠偏 | 低分追问、严重跑题换题、连续低分提前结束（规则 + FSM） |
 | 结构化评估 | LLM 三轴 1–5（`AnswerEvaluationAgent`），或由 `scores` 字段覆盖 |
 | 最终报告 | LLM 评估总结、优势、**可执行改进建议**、推荐学习主题 |

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from interview_simulator.model_layer.evaluation_schemas import AnswerEvaluationResult
+from interview_simulator.model_layer.score_alignment import PriorRound, calibrate_evaluation
 from interview_simulator.model_layer.report_schemas import InterviewLLMReport
 from interview_simulator.model_layer.schemas import QuestionComposerResult, QuestionCritique
 
@@ -67,16 +68,31 @@ class FakeScorer:
         resume: str,
         question: str,
         answer: str,
+        prior_rounds: list[PriorRound] | None = None,
         **_: Any,
     ) -> AnswerEvaluationResult:
-        _ = (job_description, resume, question)
+        _ = (job_description, resume)
+        if answer.rstrip().endswith("vague"):
+            return AnswerEvaluationResult(
+                technical_depth=2,
+                clarity=3,
+                relevance=4,
+                reasoning="Fake weak-but-on-topic answer (test marker).",
+                key_facts=[],
+            )
         depth = 5 if len(answer) > 20 else 2
-        return AnswerEvaluationResult(
+        raw = AnswerEvaluationResult(
             technical_depth=depth,
             clarity=4,
             relevance=4,
             reasoning="Fake LLM scorer: longer answers score higher on depth.",
             key_facts=["Candidate mentioned concrete implementation details"],
+        )
+        return calibrate_evaluation(
+            raw,
+            question=question,
+            answer=answer,
+            prior_rounds=prior_rounds,
         )
 
 

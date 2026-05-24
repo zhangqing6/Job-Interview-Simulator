@@ -51,7 +51,10 @@ def test_start_ask_finalize_and_report() -> None:
         "/interview/ask",
         json={
             "session_id": sid,
-            "answer": "I would use idempotency keys and retries with detailed metrics.",
+            "answer": (
+                "For Q1 API design at mid depth: idempotency keys, retries, "
+                "and detailed metrics for backend APIs."
+            ),
             "scores": None,
         },
     )
@@ -88,7 +91,7 @@ def test_follow_up_then_next_question() -> None:
 
     r2 = client.post(
         "/interview/ask",
-        json={"session_id": sid, "answer": "vague"},
+        json={"session_id": sid, "answer": "weak on-topic vague"},
     )
     assert r2.status_code == 200
     assert r2.json()["finalized"] is False

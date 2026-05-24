@@ -10,6 +10,7 @@ from interview_simulator.model_layer.language import InterviewLanguage
 from interview_simulator.model_layer.chains import InterviewQuestionComposer
 from interview_simulator.model_layer.evaluation_chain import AnswerEvaluationAgent
 from interview_simulator.model_layer.evaluation_schemas import AnswerEvaluationResult
+from interview_simulator.model_layer.score_alignment import PriorRound, heuristic_evaluate
 from interview_simulator.model_layer.llm_factory import (
     is_llm_report_enabled,
     is_llm_scoring_enabled,
@@ -29,6 +30,7 @@ class ScorerLike(Protocol):
         question: str,
         answer: str,
         interview_language: InterviewLanguage = "zh",
+        prior_rounds: list[PriorRound] | None = None,
     ) -> AnswerEvaluationResult: ...
 
 
@@ -45,7 +47,7 @@ class ReporterLike(Protocol):
 
 
 class HeuristicScorer:
-    """Neutral rubric when LLM scoring is disabled (tests / no API key)."""
+    """Question-aligned 1–5 rubric when LLM scoring is disabled (tests / no API key)."""
 
     async def ascore(
         self,
@@ -55,19 +57,14 @@ class HeuristicScorer:
         question: str,
         answer: str,
         interview_language: InterviewLanguage = "zh",
+        prior_rounds: list[PriorRound] | None = None,
     ) -> AnswerEvaluationResult:
-        _ = (job_description, resume, question, answer)
-        reasoning = (
-            "启发式中性评分（未启用 LLM 评分）。"
-            if interview_language == "zh"
-            else "Heuristic neutral scores (LLM scoring off)."
-        )
-        return AnswerEvaluationResult(
-            technical_depth=3,
-            clarity=3,
-            relevance=3,
-            reasoning=reasoning,
-            key_facts=[],
+        _ = (job_description, resume)
+        return heuristic_evaluate(
+            question=question,
+            answer=answer,
+            prior_rounds=prior_rounds,
+            interview_language=interview_language,
         )
 
 
@@ -152,6 +149,7 @@ class InterviewAgentOrchestrator:
         question: str,
         answer: str,
         interview_language: InterviewLanguage = "zh",
+        prior_rounds: list[PriorRound] | None = None,
     ) -> AnswerEvaluationResult:
         return await self.scorer.ascore(
             job_description=job_description,
@@ -159,6 +157,7 @@ class InterviewAgentOrchestrator:
             question=question,
             answer=answer,
             interview_language=interview_language,
+            prior_rounds=prior_rounds,
         )
 
     async def build_report(

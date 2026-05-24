@@ -24,9 +24,9 @@ class StoredSession(BaseModel):
     session_id: str
     job_description: str
     resume: str
-    interview_dimension: str
     expected_depth: Literal["junior", "mid", "senior"]
     policy: EvaluationPolicy
+    interview_dimension: str | None = None
     memory_config: MemoryConfig
     fsm_context: InterviewSessionContext
     memory: InterviewMemory = Field(default_factory=InterviewMemory)

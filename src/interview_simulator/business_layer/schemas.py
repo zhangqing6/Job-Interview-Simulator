@@ -19,7 +19,7 @@ class EvaluationPolicy(BaseModel):
     """Thresholds for mapping scores + session counters to FSM events."""
 
     low_score_threshold: float = Field(
-        3.0,
+        3.5,
         ge=1.0,
         le=5.0,
         description="Strictly below this average (1–5) counts as a weak answer.",

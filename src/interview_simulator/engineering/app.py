@@ -32,6 +32,7 @@ from interview_simulator.engineering.store_protocol import SessionStore
 from interview_simulator.engineering.tasks import audit_session_event
 from interview_simulator.model_layer.agents import InterviewAgentOrchestrator, ReporterLike, ScorerLike
 from interview_simulator.model_layer.chains import InterviewQuestionComposer, load_dotenv_if_present
+from interview_simulator.model_layer.dimension import dimension_focus_for_prompt, normalize_interview_dimension
 from interview_simulator.model_layer.streaming import astream_question_tokens, sse_encode
 
 _STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -141,7 +142,7 @@ def create_app(
             session_id=sid,
             job_description=body.job_description.strip(),
             resume=body.resume.strip(),
-            interview_dimension=body.interview_dimension,
+            interview_dimension=normalize_interview_dimension(body.interview_dimension),
             expected_depth=body.expected_depth,
             policy=policy,
             memory_config=MemoryConfig(),
@@ -152,11 +153,15 @@ def create_app(
 
         async def event_gen():
             buffer: list[str] = []
+            focus = dimension_focus_for_prompt(
+                session.interview_dimension,
+                interview_language=session.interview_language,
+            )
             try:
                 async for token in astream_question_tokens(
                     session.job_description,
                     session.resume,
-                    dimension=session.interview_dimension,
+                    dimension=focus,
                     expected_depth=session.expected_depth,
                     prompt_strategy=body.prompt_strategy,
                     interview_language=body.interview_language,

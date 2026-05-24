@@ -30,6 +30,21 @@ def _client(*, redis: bool = False) -> TestClient:
     return TestClient(create_app(orchestrator=_orch()))
 
 
+def test_start_without_interview_dimension() -> None:
+    client = _client()
+    start = client.post(
+        "/interview/start",
+        json={
+            "job_description": "Backend engineer.",
+            "resume": "Python, FastAPI.",
+            "expected_depth": "mid",
+            "evaluation_policy": {"max_main_questions": 1},
+        },
+    )
+    assert start.status_code == 200
+    assert start.json()["current_question"]
+
+
 def test_full_interview_lifecycle_memory() -> None:
     client = _client()
     assert client.get("/healthz").json()["status"] == "ok"
