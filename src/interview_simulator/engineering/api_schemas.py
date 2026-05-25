@@ -33,8 +33,8 @@ class InterviewStartRequest(BaseModel):
         description="If omitted, server defaults are used.",
     )
     prompt_strategy: PromptStrategy = Field(
-        "cot",
-        description="Prompt experiment: zero_shot | few_shot | cot (CoT + self-critique).",
+        "zero_shot",
+        description="Prompt experiment: zero_shot (fast) | few_shot | cot. Critique/rewrite only if USE_QUESTION_CRITIQUE=true.",
     )
     stream: bool = Field(
         False,
@@ -51,7 +51,7 @@ class InterviewStartResponse(BaseModel):
     state: str
     prompt_lane: str
     current_question: str
-    prompt_strategy: PromptStrategy = "cot"
+    prompt_strategy: PromptStrategy = "zero_shot"
     interview_language: InterviewLanguage = "zh"
     scores_source: str | None = None
 
@@ -61,7 +61,7 @@ class InterviewAskRequest(BaseModel):
     answer: str = Field(..., min_length=1)
     scores: RoundScores | None = Field(
         default=None,
-        description="Optional client scores (1–5). If omitted, LLM scorer runs when enabled.",
+        description="Optional client scores (0–5 per axis). If omitted, LLM scorer runs when enabled.",
     )
     use_llm_scoring: bool | None = Field(
         default=None,
@@ -82,6 +82,18 @@ class InterviewAskResponse(BaseModel):
     scores: RoundScores | None = None
     scores_source: Literal["client", "llm", "heuristic"] | None = None
     evaluation_reasoning: str | None = None
+    warning: str | None = Field(
+        default=None,
+        description="No score issued (e.g. duplicate answer); user should retry same question.",
+    )
+    low_avg_round_count: int | None = Field(
+        default=None,
+        description="Scored rounds so far with weighted score <= low_avg_max.",
+    )
+    low_avg_rounds_to_end: int | None = Field(
+        default=None,
+        description="Threshold from evaluation_policy for early termination.",
+    )
 
 
 class InterviewStatusResponse(BaseModel):

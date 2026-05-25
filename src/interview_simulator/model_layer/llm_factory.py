@@ -20,6 +20,21 @@ def _env_bool(name: str, default: bool) -> bool:
     return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
+def llm_request_timeout() -> float:
+    """Per-request HTTP timeout (seconds) for GLM calls."""
+    return float(os.getenv("JUDGE_REQUEST_TIMEOUT", "90"))
+
+
+def llm_max_retries() -> int:
+    """OpenAI client retries on 5xx / network errors (keep low to avoid long hangs)."""
+    return max(0, int(os.getenv("JUDGE_MAX_RETRIES", "2")))
+
+
+def use_question_critique() -> bool:
+    """When false, compose uses a single LLM call (no critique/rewrite pass)."""
+    return _env_bool("USE_QUESTION_CRITIQUE", False)
+
+
 @dataclass(frozen=True)
 class LlmConfig:
     api_key: str
@@ -53,6 +68,8 @@ def create_chat_llm(
         temperature=temperature,
         api_key=cfg.api_key,
         base_url=cfg.base_url,
+        timeout=llm_request_timeout(),
+        max_retries=llm_max_retries(),
         callbacks=[get_token_handler(agent=agent, operation=operation)],
     )
 
@@ -110,5 +127,8 @@ __all__ = [
     "is_llm_report_enabled",
     "is_llm_scoring_enabled",
     "llm_enabled",
+    "llm_max_retries",
+    "llm_request_timeout",
     "resolve_llm_config",
+    "use_question_critique",
 ]

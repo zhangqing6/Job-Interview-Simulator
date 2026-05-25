@@ -27,7 +27,7 @@
 | 业务层 · 状态机 / 决策 / 记忆 | ✅ | `business_layer/*` |
 | 工程层 ①②③ | ✅ | FastAPI、Redis、Docker、JSON 日志、健康探针 |
 
-未设置 `JUDGE_API_KEY` 时自动回退 **HeuristicScorer**（按题干–答案对齐的 1–5 启发式评分，含重复套话惩罚）与规则化报告。
+未设置 `JUDGE_API_KEY` 时自动回退 **HeuristicScorer**（按题干–答案对齐的 0–5 启发式评分，含重复套话惩罚）与规则化报告。
 
 ---
 
@@ -35,14 +35,14 @@
 
 | 能力 | 说明 |
 |------|------|
-| 动态出题 | 基于 JD + 简历，LangChain LCEL + CoT + Self-Critique 生成/改写问题 |
+| 动态出题 | 基于 JD + 简历；默认 **单次 LLM 出题**（`zero_shot`），失败时自动降级/模板兜底 |
 | 面试语言 | `interview_language`: `zh`（中文）/ `en`（英文），题目、追问、评分评语与报告随会话一致 |
 | 面试维度（选填） | 填写则按该维度出题；留空则由 JD + 简历自动推断考察方向（仍受 `expected_depth` 与 `prompt_strategy` 影响） |
 | 追问与纠偏 | 低分追问、严重跑题换题、连续低分提前结束（规则 + FSM） |
-| 结构化评估 | LLM 三轴 1–5（`AnswerEvaluationAgent`），或由 `scores` 字段覆盖 |
+| 结构化评估 | LLM 三轴 0–5（`AnswerEvaluationAgent`），或由 `scores` 字段覆盖 |
 | 最终报告 | LLM 评估总结、优势、**可执行改进建议**、推荐学习主题 |
 | 流式出题 | SSE：`POST /interview/start/stream` |
-| Prompt 实验 | `zero_shot` / `few_shot` / `cot`（默认 `cot`） |
+| Prompt 实验 | `zero_shot`（默认）/ `few_shot` / `cot`；完整自检需 `USE_QUESTION_CRITIQUE=true` |
 | 会话与并发 | `REDIS_URL` 外置会话；`acompose` / 线程池异步出题；多实例可共享 Redis |
 
 ---
@@ -81,10 +81,11 @@
 
 **② 评分与决策模块** ✅
 
-- 技术深度 / 表达清晰度 / 相关性：各 1–5（`RoundScores`）  
-- 低分 → 追问（有上限）  
-- 严重跑题（`relevance` 过低）→ 换题  
-- 连续弱轮 → 提前 `finalize`（`EvaluationPolicy` 可配）
+- 技术深度 / 表达清晰度 / 相关性：各 **0–5**（`RoundScores`，不做分数映射）  
+- **加权分** = `0.3×技术 + 0.2×清晰 + 0.5×相关`（追问/换题/提前结束均据此）  
+- **加权 ≥4**：接近正确 → 下一主问；**加权 2–4** → 追问（有上限）  
+- **答非所问/跨题答案雷同**：不予评分并警告，同一题可重答一次；**累计两次警告** → 结束并生成报告  
+- **累计两次**加权分 ≤1.5 → 提前 `finalize`（`low_avg_rounds_to_end`，默认 2；`low_avg_max` 默认 1.5）
 
 **③ 多轮记忆管理** ✅
 
@@ -153,9 +154,12 @@ docker-compose.yml
 ```bash
 JUDGE_API_KEY=your_zhipu_api_key
 JUDGE_BASE_URL=https://open.bigmodel.cn/api/paas/v4/
-JUDGE_MODEL=glm-4
+JUDGE_MODEL=glm-4-flash          # 更快；可改为 glm-4
+JUDGE_REQUEST_TIMEOUT=90
+JUDGE_MAX_RETRIES=2
 USE_LLM_SCORING=true
 USE_LLM_REPORT=true
+USE_QUESTION_CRITIQUE=false      # true 时 cot 会额外自检+改写（最多 3 次调用，易变慢）
 # 不设 REDIS_URL → 单进程内存会话
 # REDIS_URL=redis://localhost:6379/0
 SESSION_TTL_SECONDS=86400

@@ -1,40 +1,62 @@
-"""Map structured scores + session counters to FSM driver events (README Part 2 ②)."""
+"""Map 0–5 structured scores + session counters to FSM driver events (README Part 2 ②)."""
 
 from __future__ import annotations
 
 from interview_simulator.business_layer.interview_fsm import InterviewEvent
 from interview_simulator.business_layer.schemas import EvaluationPolicy, RoundScores
+from interview_simulator.business_layer.score_weighting import weighted_score
 
 
-def _average(scores: RoundScores) -> float:
-    return (scores.technical_depth + scores.clarity + scores.relevance) / 3.0
+def is_critical_fail(scores: RoundScores, policy: EvaluationPolicy | None = None) -> bool:
+    """0–1 band on every axis."""
+
+    _ = policy
+    return (
+        scores.technical_depth <= 1
+        and scores.clarity <= 1
+        and scores.relevance <= 1
+    )
 
 
-def is_weak_answer(scores: RoundScores, policy: EvaluationPolicy) -> bool:
-    if _average(scores) < policy.low_score_threshold:
-        return True
-    return min(scores.technical_depth, scores.clarity, scores.relevance) <= policy.min_score_floor
+def is_satisfactory(scores: RoundScores, policy: EvaluationPolicy | None = None) -> bool:
+    """4–5 band: weighted score close to correct."""
+
+    policy = policy or EvaluationPolicy()
+    if is_critical_fail(scores, policy):
+        return False
+    return weighted_score(scores) >= policy.satisfactory_weighted_min
 
 
-def is_severe_off_topic(scores: RoundScores, policy: EvaluationPolicy) -> bool:
-    return scores.relevance <= policy.severe_relevance_max
+def is_partial_answer(scores: RoundScores, policy: EvaluationPolicy | None = None) -> bool:
+    """2–3 band: partial → follow-up when budget remains."""
+
+    policy = policy or EvaluationPolicy()
+    if is_critical_fail(scores, policy) or is_satisfactory(scores, policy):
+        return False
+    w = weighted_score(scores)
+    return policy.partial_weighted_min <= w < policy.satisfactory_weighted_min
 
 
-def next_consecutive_weak_streak(
-    *,
-    previous: int,
-    chosen_event: InterviewEvent,
-    weak: bool,
-) -> int:
-    """How ``InterviewSessionContext.consecutive_weak_rounds`` should read after this decision."""
+def is_weak_answer(scores: RoundScores, policy: EvaluationPolicy | None = None) -> bool:
+    return is_partial_answer(scores, policy)
 
-    if chosen_event is InterviewEvent.EVAL_FINALIZE:
-        return previous
-    if chosen_event is InterviewEvent.EVAL_FOLLOW_UP:
-        return previous
-    if chosen_event is InterviewEvent.EVAL_NEXT_QUESTION:
-        return previous + 1 if weak else 0
-    raise ValueError(f"Unexpected post-evaluation event: {chosen_event!r}")
+
+def is_severe_off_topic(scores: RoundScores, policy: EvaluationPolicy | None = None) -> bool:
+    _ = policy
+    return scores.relevance <= 1
+
+
+def is_low_average_round(scores: RoundScores, policy: EvaluationPolicy | None = None) -> bool:
+    """Cumulative early-end: weighted score <= low_avg_max (default 1.5)."""
+
+    policy = policy or EvaluationPolicy()
+    return weighted_score(scores) <= policy.low_avg_max + 1e-9
+
+
+def round_average(scores: RoundScores) -> float:
+    """Alias: weighted composite score used for decisions and UI."""
+
+    return weighted_score(scores)
 
 
 def decide_post_evaluation(
@@ -42,51 +64,25 @@ def decide_post_evaluation(
     *,
     main_round_index: int,
     follow_ups_in_round: int,
-    consecutive_weak_rounds: int,
     policy: EvaluationPolicy | None = None,
-) -> tuple[InterviewEvent, int]:
-    """Return the FSM event to apply from ``EVALUATING``, plus the new weak-round streak.
-
-    Rules (README):
-    - Low scores → follow-up while budget remains.
-    - Severe off-topic → skip follow-ups and move to the next main question (or finalize on last round).
-    - Several consecutive weak main rounds → early finalize.
-    - Last main question with a normal "next" decision → finalize instead of preparing another main question.
-    """
-
+) -> InterviewEvent:
     policy = policy or EvaluationPolicy()
-    weak = is_weak_answer(scores, policy)
-    off = is_severe_off_topic(scores, policy)
-
+    partial = is_partial_answer(scores, policy)
     last_main_round = main_round_index >= policy.max_main_questions - 1
 
-    if off:
-        base = InterviewEvent.EVAL_FINALIZE if last_main_round else InterviewEvent.EVAL_NEXT_QUESTION
-    elif weak and follow_ups_in_round < policy.max_follow_ups_per_round:
-        base = InterviewEvent.EVAL_FOLLOW_UP
-    else:
-        base = InterviewEvent.EVAL_NEXT_QUESTION if not last_main_round else InterviewEvent.EVAL_FINALIZE
+    if partial and follow_ups_in_round < policy.max_follow_ups_per_round:
+        return InterviewEvent.EVAL_FOLLOW_UP
 
-    if base is InterviewEvent.EVAL_NEXT_QUESTION:
-        hurts_streak = weak or off
-        early_terminate = hurts_streak and (consecutive_weak_rounds + 1 >= policy.consecutive_weak_to_end)
-        if early_terminate:
-            base = InterviewEvent.EVAL_FINALIZE
-
-    if base is InterviewEvent.EVAL_FINALIZE:
-        return base, consecutive_weak_rounds
-
-    new_streak = next_consecutive_weak_streak(
-        previous=consecutive_weak_rounds,
-        chosen_event=base,
-        weak=weak or off,
-    )
-    return base, new_streak
+    return InterviewEvent.EVAL_FINALIZE if last_main_round else InterviewEvent.EVAL_NEXT_QUESTION
 
 
 __all__ = [
     "decide_post_evaluation",
+    "is_critical_fail",
+    "is_low_average_round",
+    "is_partial_answer",
+    "is_satisfactory",
     "is_severe_off_topic",
     "is_weak_answer",
-    "next_consecutive_weak_streak",
+    "round_average",
 ]

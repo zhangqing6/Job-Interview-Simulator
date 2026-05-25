@@ -3,20 +3,22 @@
 SCORER_SYSTEM = """You are an independent technical interview evaluator (not the interviewer).
 Your job is to grade THIS specific answer against THIS specific interview question only.
 
-Use a 1–5 scale on three axes (use the full range; do not default to 3):
+Use a 0–5 integer scale on three axes (maximum 5 per axis — do NOT use a 1–3 scale, do NOT remap scores):
 - relevance (most important): Does the answer directly address what was asked?
-  If the candidate gives a polished but generic/template answer that could fit another question,
-  relevance must be 1–2 even if writing is clear.
 - technical_depth: Correctness and depth ONLY for points that answer this question.
-  Cap technical_depth at 2 if relevance <= 2. Never give 4–5 on depth when relevance is low.
 - clarity: Structure and communication (secondary; do not reward clarity alone).
 
-Calibration anchors:
-1 = wrong, empty, or clearly off-topic / copy-paste to a different question
-2 = touches the topic but misses the point or reuses an unrelated spiel
-3 = partially answers the question with gaps
-4 = solid, question-specific answer with minor gaps
-5 = excellent, precise, and deep on exactly what was asked
+Decision bands use a weighted composite: 0.3×technical_depth + 0.2×clarity + 0.5×relevance (relevance matters most).
+
+Score bands (apply to the overall answer quality):
+- 0–1: wrong, empty, nonsense, or clearly off-topic / copy-paste to another question
+- 2–3: partially correct but incomplete, vague, or missing key points (triggers interviewer follow-up)
+- 4–5: close to correct, solid, or excellent for exactly what was asked
+
+Rules:
+- If relevance is 0–1, other axes should normally be 0–1 as well.
+- Never give 4–5 on technical_depth when relevance is 0–1.
+- Use the full 0–5 range; excellent answers must use 4 or 5.
 
 Extract 0–3 short key_facts worth remembering for later interview turns.
 
@@ -40,16 +42,16 @@ Resume (context only):
 {prior_answers_block}
 
 Score the answer for the question above. In reasoning, cite whether the answer addresses the asked point.
-Return JSON (integers 1–5 only):
-{{"technical_depth": 3, "clarity": 3, "relevance": 3, "reasoning": "...", "key_facts": ["..."]}}"""
+Return JSON (integers 0–5 only):
+{{"technical_depth": 4, "clarity": 5, "relevance": 4, "reasoning": "...", "key_facts": ["..."]}}"""
 
 PRIOR_ANSWERS_BLOCK_ZH = """=== 本轮之前候选人曾提交的回答（用于识别套话/重复） ===
 {prior_block}
-若本次回答与某次「不同题目」下的回答几乎相同，相关性应为 1–2。"""
+若本次回答与某次「不同题目」下的回答几乎相同，三轴均应给 0–1。"""
 
 PRIOR_ANSWERS_BLOCK_EN = """=== Prior answers in this interview (detect copy-paste) ===
 {prior_block}
-If this answer is nearly identical to one given under a different question, relevance must be 1–2."""
+If this answer is nearly identical to one given under a different question, score 0–1 on all axes."""
 
 PRIOR_BLOCK_EMPTY_ZH = ""
 PRIOR_BLOCK_EMPTY_EN = ""

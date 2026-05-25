@@ -76,10 +76,15 @@ class InterviewSessionContext(BaseModel):
     state: InterviewState = InterviewState.INITIAL
     main_round_index: int = Field(0, ge=0, description="0-based index of the current main question round.")
     follow_ups_in_round: int = Field(0, ge=0, description="Follow-ups taken in the current main round.")
-    consecutive_weak_rounds: int = Field(
+    duplicate_warning_count: int = Field(
         0,
         ge=0,
-        description="Weak main rounds in a row (README ②: used for early interview termination).",
+        description="Duplicate/off-topic answer warnings issued (two → early finalize).",
+    )
+    low_avg_round_count: int = Field(
+        0,
+        ge=0,
+        description="Scored rounds with weighted score <= policy.low_avg_max (early finalize when >= threshold).",
     )
     turns_presented: int = Field(
         0,

@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>智能面试官 · 模拟面试</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&family=Noto+Sans+SC:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/static/css/app.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="header">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <div>
+            <h1>智能面试官</h1>
+            <p class="subtitle">多轮技术面试模拟 · 基于 JD 与简历动态出题</p>
+          </div>
+        </div>
+        <div class="header-actions">
+          <label class="api-base">
+            <span>API</span>
+            <input type="text" id="apiBase" value="" placeholder="留空=当前站点" />
+          </label>
+          <span class="health-dot" id="healthDot" title="服务状态"></span>
+        </div>
+      </header>
+
+      <main class="layout">
+        <!-- 左侧：配置 -->
+        <aside class="panel setup-panel" id="setupPanel">
+          <h2>① 面试设置</h2>
+          <p class="hint">填写职位与简历，点击开始后将由 AI 生成首题。</p>
+
+          <form id="startForm" class="form">
+            <label>
+              <span>职位描述 (JD) <em>*</em></span>
+              <textarea
+                id="jobDescription"
+                rows="5"
+                required
+                placeholder="岗位职责、技术栈、团队背景…"
+              ></textarea>
+            </label>
+
+            <label>
+              <span>候选人简历 <em>*</em></span>
+              <textarea
+                id="resume"
+                rows="5"
+                required
+                placeholder="项目经历、技能、年限…"
+              ></textarea>
+            </label>
+
+            <div class="row-2">
+              <label>
+                <span>面试维度 <em class="optional">选填</em></span>
+                <input
+                  type="text"
+                  id="interviewDimension"
+                  value=""
+                  placeholder="留空则根据 JD+简历自动选题；如：分布式系统"
+                />
+              </label>
+              <label>
+                <span>期望深度</span>
+                <select id="expectedDepth">
+                  <option value="junior">Junior</option>
+                  <option value="mid" selected>Mid</option>
+                  <option value="senior">Senior</option>
+                </select>
+              </label>
+            </div>
+
+            <div class="row-2">
+              <label>
+                <span>面试语言</span>
+                <select id="interviewLanguage">
+                  <option value="zh" selected>中文</option>
+                  <option value="en">English</option>
+                </select>
+              </label>
+              <label>
+                <span>Prompt 策略</span>
+                <select id="promptStrategy">
+                  <option value="zero_shot" selected>Zero-shot（推荐，更快）</option>
+                  <option value="cot">CoT + 自检（需 USE_QUESTION_CRITIQUE=true）</option>
+                  <option value="few_shot">Few-shot</option>
+                </select>
+              </label>
+            </div>
+
+            <div class="row-2">
+              <label>
+                <span>主问题轮数上限</span>
+                <input type="number" id="maxMainQuestions" min="1" max="10" value="3" />
+              </label>
+              <label>
+                <span>每轮最多追问</span>
+                <input type="number" id="maxFollowUps" min="0" max="5" value="1" />
+              </label>
+            </div>
+
+            <div class="form-actions">
+              <button type="button" class="btn ghost" id="fillSample">填入示例</button>
+              <button type="submit" class="btn primary" id="startBtn">
+                开始面试
+              </button>
+            </div>
+          </form>
+        </aside>
+
+        <!-- 中间：答题 -->
+        <section class="panel interview-panel" id="interviewPanel">
+          <div class="empty-state" id="emptyState">
+            <div class="empty-icon">💬</div>
+            <p>完成左侧设置后，点击「开始面试」</p>
+          </div>
+
+          <div class="interview-active hidden" id="interviewActive">
+            <div class="session-bar">
+              <div class="session-meta">
+                <span class="badge" id="stateBadge">—</span>
+                <span class="round-label" id="roundLabel">第 1 轮主问</span>
+              </div>
+              <button type="button" class="btn tiny ghost" id="copySessionId" title="复制会话 ID">
+                复制 ID
+              </button>
+            </div>
+
+            <article class="question-card">
+              <span class="label">面试官</span>
+              <p class="question-text" id="currentQuestion">—</p>
+            </article>
+
+            <form id="askForm" class="form answer-form">
+              <label>
+                <span>你的回答 <em>*</em></span>
+                <textarea
+                  id="answer"
+                  rows="6"
+                  required
+                  placeholder="尽量结构化：背景 → 方案 → 结果与权衡…"
+                ></textarea>
+              </label>
+              <div class="form-actions">
+                <button type="button" class="btn ghost" id="refreshStatus">刷新状态</button>
+                <button type="submit" class="btn primary" id="submitBtn">
+                  提交回答
+                </button>
+              </div>
+            </form>
+
+            <div class="feedback hidden" id="lastFeedback">
+              <h3>本轮评分</h3>
+              <div class="score-grid" id="scoreGrid"></div>
+              <p class="reasoning" id="evalReasoning"></p>
+              <p class="message-hint" id="responseMessage"></p>
+            </div>
+          </div>
+        </section>
+
+        <!-- 右侧：历史与报告 -->
+        <aside class="panel side-panel">
+          <h2>② 进度与记录</h2>
+          <ul class="timeline" id="timeline"></ul>
+
+          <div class="report-block hidden" id="reportBlock">
+            <h2>③ 面试报告</h2>
+            <p class="report-pending hidden" id="reportPending">报告生成中，请稍候…</p>
+            <div id="reportContent"></div>
+            <button type="button" class="btn ghost full" id="reloadReport">
+              重新加载报告
+            </button>
+          </div>
+        </aside>
+      </main>
+    </div>
+
+    <div class="toast-container" id="toastContainer" aria-live="polite"></div>
+    <div class="loading-overlay hidden" id="loadingOverlay">
+      <div class="spinner"></div>
+      <p id="loadingText">正在调用 AI，请稍候…</p>
+    </div>
+
+    <script src="/static/js/app.js" type="module"></script>
+  </body>
+</html>

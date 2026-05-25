@@ -79,6 +79,7 @@ def test_prompt_lane_mapping() -> None:
 def test_patch_context_updates_aux_counters() -> None:
     m = InterviewStateMachine()
     m.apply(InterviewEvent.START_SESSION)
-    m.patch_context(consecutive_weak_rounds=2)
-    assert m.context.consecutive_weak_rounds == 2
+    m.patch_context(duplicate_warning_count=1, low_avg_round_count=2)
+    assert m.context.duplicate_warning_count == 1
+    assert m.context.low_avg_round_count == 2
     assert m.context.state is InterviewState.QUESTIONING

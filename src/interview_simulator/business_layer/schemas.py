@@ -8,41 +8,46 @@ from pydantic import BaseModel, Field
 
 
 class RoundScores(BaseModel):
-    """Structured per-turn scores (1–5), aligned with README multi-axis rubric."""
+    """Structured per-turn scores (0–5 per axis)."""
 
-    technical_depth: int = Field(..., ge=1, le=5, description="Technical correctness / depth.")
-    clarity: int = Field(..., ge=1, le=5, description="How clear and structured the answer is.")
-    relevance: int = Field(..., ge=1, le=5, description="Alignment with the stated question.")
+    technical_depth: int = Field(..., ge=0, le=5, description="Technical correctness / depth.")
+    clarity: int = Field(..., ge=0, le=5, description="How clear and structured the answer is.")
+    relevance: int = Field(..., ge=0, le=5, description="Alignment with the stated question.")
 
 
 class EvaluationPolicy(BaseModel):
-    """Thresholds for mapping scores + session counters to FSM events."""
+    """Thresholds for mapping 0–5 scores + session counters to FSM events."""
 
-    low_score_threshold: float = Field(
-        3.5,
-        ge=1.0,
+    satisfactory_weighted_min: float = Field(
+        4.0,
+        ge=0.0,
         le=5.0,
-        description="Strictly below this average (1–5) counts as a weak answer.",
+        description="Weighted score (0.3/0.2/0.5) >= this → next main question.",
     )
-    min_score_floor: int = Field(
+    partial_weighted_min: float = Field(
+        2.0,
+        ge=0.0,
+        le=5.0,
+        description="Weighted score in [partial_weighted_min, satisfactory_weighted_min) → follow-up.",
+    )
+    duplicate_warnings_to_end: int = Field(
         2,
         ge=1,
-        le=5,
-        description="Any axis at or below this value counts as weak even if the average is higher.",
+        description="End interview after this many duplicate/off-topic answer warnings.",
     )
-    severe_relevance_max: int = Field(
+    low_avg_rounds_to_end: int = Field(
         2,
         ge=1,
-        le=5,
-        description="Relevance at or below this value is treated as severe off-topic → change topic.",
+        description="End interview after this many scored rounds with weighted score <= low_avg_max.",
+    )
+    low_avg_max: float = Field(
+        1.5,
+        ge=0.0,
+        le=5.0,
+        description="0.3×技术 + 0.2×清晰 + 0.5×相关 <= this value counts as a low round.",
     )
     max_follow_ups_per_round: int = Field(2, ge=0, description="Follow-ups allowed after each main question.")
     max_main_questions: int = Field(5, ge=1, description="Cap on main question rounds before forced finalize.")
-    consecutive_weak_to_end: int = Field(
-        2,
-        ge=1,
-        description="End interview after this many consecutive weak main rounds (README: 连续多轮低分).",
-    )
 
 
 class TurnRecord(BaseModel):

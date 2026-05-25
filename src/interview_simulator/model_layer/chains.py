@@ -11,7 +11,7 @@ from interview_simulator.model_layer.language import (
     critique_language_rule,
     question_language_rule,
 )
-from interview_simulator.model_layer.llm_factory import create_chat_llm
+from interview_simulator.model_layer.llm_factory import create_chat_llm, use_question_critique
 from interview_simulator.model_layer.structured_compat import make_structured_chain
 from interview_simulator.model_layer.prompt_strategy import (
     FEW_SHOT_GENERATION_PREFIX,
@@ -91,6 +91,30 @@ class InterviewQuestionComposer:
             return self._gen_few
         return self._gen_cot
 
+    @staticmethod
+    def _skipped_critique() -> QuestionCritique:
+        return QuestionCritique(
+            difficulty_adequate=True,
+            relevance_adequate=True,
+            reasoning="single-pass compose (critique disabled)",
+            improvement_hint=None,
+        )
+
+    def _from_initial(
+        self,
+        initial: GeneratedQuestion,
+        *,
+        prompt_strategy: PromptStrategy,
+    ) -> QuestionComposerResult:
+        return QuestionComposerResult(
+            final_question=initial.question_text,
+            expected_depth=initial.expected_depth,
+            was_rewritten=False,
+            critique=self._skipped_critique(),
+            initial_question=initial.question_text,
+            prompt_strategy=prompt_strategy,
+        )
+
     def _payload(
         self,
         job_description: str,
@@ -122,30 +146,6 @@ class InterviewQuestionComposer:
         prompt_strategy: PromptStrategy = "cot",
         interview_language: InterviewLanguage = "zh",
     ) -> QuestionComposerResult:
-        if prompt_strategy == "zero_shot":
-            initial = self._gen_zero.invoke(
-                self._payload(
-                    job_description,
-                    resume,
-                    dimension=dimension,
-                    expected_depth=expected_depth,
-                    interview_language=interview_language,
-                )
-            )
-            return QuestionComposerResult(
-                final_question=initial.question_text,
-                expected_depth=initial.expected_depth,
-                was_rewritten=False,
-                critique=QuestionCritique(
-                    difficulty_adequate=True,
-                    relevance_adequate=True,
-                    reasoning="zero_shot: critique skipped",
-                    improvement_hint=None,
-                ),
-                initial_question=initial.question_text,
-                prompt_strategy=prompt_strategy,
-            )
-
         gen = self._gen_chain(prompt_strategy)
         base = self._payload(
             job_description,
@@ -155,6 +155,9 @@ class InterviewQuestionComposer:
             interview_language=interview_language,
         )
         initial = gen.invoke(base)
+        if prompt_strategy == "zero_shot" or not use_question_critique():
+            return self._from_initial(initial, prompt_strategy=prompt_strategy)
+
         critique = self._crit.invoke(
             {
                 **self._payload(
@@ -206,30 +209,6 @@ class InterviewQuestionComposer:
         prompt_strategy: PromptStrategy = "cot",
         interview_language: InterviewLanguage = "zh",
     ) -> QuestionComposerResult:
-        if prompt_strategy == "zero_shot":
-            initial = await self._gen_zero.ainvoke(
-                self._payload(
-                    job_description,
-                    resume,
-                    dimension=dimension,
-                    expected_depth=expected_depth,
-                    interview_language=interview_language,
-                )
-            )
-            return QuestionComposerResult(
-                final_question=initial.question_text,
-                expected_depth=initial.expected_depth,
-                was_rewritten=False,
-                critique=QuestionCritique(
-                    difficulty_adequate=True,
-                    relevance_adequate=True,
-                    reasoning="zero_shot: critique skipped",
-                    improvement_hint=None,
-                ),
-                initial_question=initial.question_text,
-                prompt_strategy=prompt_strategy,
-            )
-
         gen = self._gen_chain(prompt_strategy)
         base = self._payload(
             job_description,
@@ -239,6 +218,9 @@ class InterviewQuestionComposer:
             interview_language=interview_language,
         )
         initial = await gen.ainvoke(base)
+        if prompt_strategy == "zero_shot" or not use_question_critique():
+            return self._from_initial(initial, prompt_strategy=prompt_strategy)
+
         critique = await self._crit.ainvoke(
             {
                 **self._payload(
