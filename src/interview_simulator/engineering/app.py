@@ -24,6 +24,8 @@ from interview_simulator.engineering.api_schemas import (
 )
 from interview_simulator.engineering.factory import close_store, create_session_store, open_store
 from interview_simulator.engineering.health import build_health_payload, check_readiness
+from interview_simulator.engineering.metrics import get_metrics
+from interview_simulator.business_layer.score_weighting import weighted_score
 from interview_simulator.engineering.logging_setup import configure_logging
 from interview_simulator.engineering.middleware import RequestLoggingMiddleware
 from interview_simulator.engineering.report_worker import run_report_for_session
@@ -211,16 +213,20 @@ def create_app(
             scores=body.scores,
             use_llm_scoring=body.use_llm_scoring,
         )
+        audit_extra: dict[str, Any] = {
+            "finalized": resp.finalized,
+            "state": resp.state,
+            "scores_source": resp.scores_source,
+            "low_avg_round_count": resp.low_avg_round_count,
+        }
+        if resp.scores is not None:
+            audit_extra["weighted_score"] = round(weighted_score(resp.scores), 3)
         background_tasks.add_task(
             audit_session_event,
             st,
             body.session_id,
             event="ask",
-            extra={
-                "finalized": resp.finalized,
-                "state": resp.state,
-                "scores_source": resp.scores_source,
-            },
+            extra=audit_extra,
         )
         if resp.finalized and orch.use_llm_report:
             background_tasks.add_task(run_report_for_session, body.session_id)
@@ -240,9 +246,19 @@ def create_app(
     ) -> InterviewReportResponse:
         return await svc.report(session_id)
 
+    @app.get("/metrics")
+    async def metrics() -> dict[str, Any]:
+        """Process-level latency, concurrency, scoring distribution (JSON)."""
+
+        return get_metrics().snapshot()
+
     @app.get("/healthz")
     async def healthz(st: SessionStore = Depends(get_store)) -> dict[str, Any]:
-        return await build_health_payload(st)
+        payload = await build_health_payload(st)
+        payload["metrics"] = {
+            "active_sessions": get_metrics().snapshot()["active_sessions"],
+        }
+        return payload
 
     @app.get("/readyz")
     async def readyz(st: SessionStore = Depends(get_store)) -> Response:

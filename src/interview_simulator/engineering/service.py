@@ -48,7 +48,9 @@ from interview_simulator.model_layer.dimension import (
 )
 from interview_simulator.model_layer.question_fallback import fallback_question
 from interview_simulator.model_layer.report_schemas import InterviewLLMReport
+from interview_simulator.engineering.metrics import get_metrics, observe_ms
 from interview_simulator.model_layer.score_alignment import PriorRound, is_duplicate_across_questions
+from interview_simulator.business_layer.score_weighting import weighted_score
 
 _logger = logging.getLogger(__name__)
 
@@ -70,6 +72,29 @@ class SessionRecord:
     interview_language: InterviewLanguage = "zh"
     llm_report: InterviewLLMReport | None = None
     report_pending: bool = False
+    finalize_reason: str | None = None
+
+
+def build_session_analytics(session: SessionRecord) -> dict:
+    """Per-session stats: rounds, weighted scores, dialogue turns, end reason."""
+
+    ctx = session.fsm.context
+    weighted_history = [
+        round(weighted_score(r.scores), 3) for r in session.completed_rounds
+    ]
+    scored = len(session.completed_rounds)
+    return {
+        "scored_rounds": scored,
+        "effective_dialogue_turns": ctx.turns_presented,
+        "main_round_index": ctx.main_round_index,
+        "follow_ups_in_round": ctx.follow_ups_in_round,
+        "weighted_score_history": weighted_history,
+        "weighted_score_mean": round(sum(weighted_history) / scored, 3) if scored else None,
+        "low_avg_round_count": ctx.low_avg_round_count,
+        "duplicate_warning_count": ctx.duplicate_warning_count,
+        "finalize_reason": session.finalize_reason,
+        "is_finalized": ctx.state.value == "finalize",
+    }
 
 
 class InterviewHttpService:
@@ -110,11 +135,19 @@ class InterviewHttpService:
             prompt_strategy=prompt_strategy,
             interview_language=interview_language,
         )
-        q = await self._compose_question(session)
-        session.current_question = q
-        session.fsm.apply(InterviewEvent.QUESTION_PREPARED)
-        session.memory.append_turn(TurnRecord(role="interviewer", text=q), config=session.memory_config)
-        await self._store.put(session)
+        get_metrics().session_started()
+        try:
+            with observe_ms("start_compose_question"):
+                q = await self._compose_question(session)
+            session.current_question = q
+            session.fsm.apply(InterviewEvent.QUESTION_PREPARED)
+            session.memory.append_turn(
+                TurnRecord(role="interviewer", text=q), config=session.memory_config
+            )
+            await self._store.put(session)
+        except Exception:
+            get_metrics().session_ended()
+            raise
         ctx = session.fsm.context
         return InterviewStartResponse(
             session_id=sid,
@@ -167,9 +200,12 @@ class InterviewHttpService:
         lang = session.interview_language
 
         if warnings >= session.policy.duplicate_warnings_to_end:
+            session.finalize_reason = "duplicate_answer_early"
+            get_metrics().inc("finalize_duplicate_early")
             session.fsm.apply(InterviewEvent.ANSWER_SUBMITTED)
             session.fsm.apply(InterviewEvent.EVAL_FINALIZE)
             msg = duplicate_answer_finalize_message(lang)
+            get_metrics().session_ended()
             await self._schedule_report_generation(session)
             await self._store.put(session)
             return InterviewAskResponse(
@@ -185,6 +221,7 @@ class InterviewHttpService:
                 evaluation_reasoning=msg,
             )
 
+        get_metrics().inc("duplicate_warning")
         warn = duplicate_answer_warning(lang)
         await self._store.put(session)
         return InterviewAskResponse(
@@ -220,94 +257,143 @@ class InterviewHttpService:
             )
 
         answer = answer.strip()
-        if is_duplicate_across_questions(
-            session.current_question,
-            answer,
-            self._prior_rounds(session),
-        ):
-            return await self._handle_duplicate_answer(session, session_id=session_id, answer=answer)
+        with observe_ms("ask_total"):
+            if is_duplicate_across_questions(
+                session.current_question,
+                answer,
+                self._prior_rounds(session),
+            ):
+                return await self._handle_duplicate_answer(
+                    session, session_id=session_id, answer=answer
+                )
 
-        rubric, scores_source, reasoning = await self._resolve_scores(
-            session,
-            answer=answer,
-            client_scores=scores,
-            use_llm_scoring=use_llm_scoring,
-        )
-        main_idx = session.fsm.context.main_round_index
-        fu = session.fsm.context.follow_ups_in_round
-
-        session.memory.append_turn(TurnRecord(role="candidate", text=answer), config=session.memory_config)
-        session.fsm.apply(InterviewEvent.ANSWER_SUBMITTED)
-
-        low_avg_count = session.fsm.context.low_avg_round_count
-        if is_low_average_round(rubric, session.policy):
-            low_avg_count += 1
-        session.fsm.patch_context(low_avg_round_count=low_avg_count)
-
-        if low_avg_count >= session.policy.low_avg_rounds_to_end:
-            event = InterviewEvent.EVAL_FINALIZE
-        else:
-            event = decide_post_evaluation(
-                rubric,
-                main_round_index=main_idx,
-                follow_ups_in_round=fu,
-                policy=session.policy,
-            )
-
-        ev_note = reasoning or (
-            f"scores depth={rubric.technical_depth} clarity={rubric.clarity} relevance={rubric.relevance}"
-        )
-        session.memory.append_round_line(
-            main_round_index=main_idx,
-            question=session.current_question,
-            answer_excerpt=answer,
-            evaluation_excerpt=ev_note,
-            config=session.memory_config,
-        )
-        session.completed_rounds.append(
-            CompletedRoundDTO(
-                main_round_index=main_idx,
-                follow_ups_in_round_at_submit=fu,
-                question=session.current_question,
+            rubric, scores_source, reasoning = await self._resolve_scores(
+                session,
                 answer=answer,
-                scores=rubric,
+                client_scores=scores,
+                use_llm_scoring=use_llm_scoring,
             )
-        )
+            main_idx = session.fsm.context.main_round_index
+            fu = session.fsm.context.follow_ups_in_round
 
-        session.fsm.apply(event)
-
-        if event is InterviewEvent.EVAL_FINALIZE:
-            end_msg = (
-                low_avg_finalize_message(session.interview_language)
-                if low_avg_count >= session.policy.low_avg_rounds_to_end
-                else "Interview ended."
+            session.memory.append_turn(
+                TurnRecord(role="candidate", text=answer), config=session.memory_config
             )
-            await self._schedule_report_generation(session)
-            await self._store.put(session)
-            return InterviewAskResponse(
-                session_id=session_id,
-                state=session.fsm.context.state.value,
-                prompt_lane=prompt_lane_for_state(session.fsm.context.state),
-                finalized=True,
-                current_question=None,
-                message=end_msg,
-                scores=rubric,
-                scores_source=scores_source,
-                evaluation_reasoning=reasoning,
-                **self._low_avg_meta(session, count=low_avg_count),
+            session.fsm.apply(InterviewEvent.ANSWER_SUBMITTED)
+
+            low_avg_count = session.fsm.context.low_avg_round_count
+            if is_low_average_round(rubric, session.policy):
+                low_avg_count += 1
+            session.fsm.patch_context(low_avg_round_count=low_avg_count)
+
+            w = weighted_score(rubric)
+            get_metrics().record_weighted_score(w)
+
+            if low_avg_count >= session.policy.low_avg_rounds_to_end:
+                session.finalize_reason = "low_weighted_avg_early"
+                get_metrics().inc("finalize_low_avg_early")
+                event = InterviewEvent.EVAL_FINALIZE
+            else:
+                event = decide_post_evaluation(
+                    rubric,
+                    main_round_index=main_idx,
+                    follow_ups_in_round=fu,
+                    policy=session.policy,
+                )
+
+            ev_note = reasoning or (
+                f"scores depth={rubric.technical_depth} clarity={rubric.clarity} "
+                f"relevance={rubric.relevance} weighted={w:.2f}"
+            )
+            session.memory.append_round_line(
+                main_round_index=main_idx,
+                question=session.current_question,
+                answer_excerpt=answer,
+                evaluation_excerpt=ev_note,
+                config=session.memory_config,
+            )
+            session.completed_rounds.append(
+                CompletedRoundDTO(
+                    main_round_index=main_idx,
+                    follow_ups_in_round_at_submit=fu,
+                    question=session.current_question,
+                    answer=answer,
+                    scores=rubric,
+                )
             )
 
-        if event is InterviewEvent.EVAL_FOLLOW_UP:
-            dim = follow_up_dimension(session.interview_language, session.current_question)
-            fq = await self._compose_question(session, dimension_override=dim)
-            session.current_question = fq
-            session.fsm.apply(InterviewEvent.FOLLOW_UP_PREPARED)
-            session.memory.append_turn(TurnRecord(role="interviewer", text=fq), config=session.memory_config)
+            session.fsm.apply(event)
+
+            if event is InterviewEvent.EVAL_FINALIZE:
+                if session.finalize_reason is None:
+                    session.finalize_reason = "max_main_rounds"
+                    get_metrics().inc("finalize_max_rounds")
+                end_msg = (
+                    low_avg_finalize_message(session.interview_language)
+                    if session.finalize_reason == "low_weighted_avg_early"
+                    else "Interview ended."
+                )
+                get_metrics().session_ended()
+                await self._schedule_report_generation(session)
+                await self._store.put(session)
+                return InterviewAskResponse(
+                    session_id=session_id,
+                    state=session.fsm.context.state.value,
+                    prompt_lane=prompt_lane_for_state(session.fsm.context.state),
+                    finalized=True,
+                    current_question=None,
+                    message=end_msg,
+                    scores=rubric,
+                    scores_source=scores_source,
+                    evaluation_reasoning=reasoning,
+                    **self._low_avg_meta(session, count=low_avg_count),
+                )
+
+            if event is InterviewEvent.EVAL_FOLLOW_UP:
+                get_metrics().inc("decision_follow_up")
+                dim = follow_up_dimension(session.interview_language, session.current_question)
+                with observe_ms("ask_follow_up_compose"):
+                    fq = await self._compose_question(session, dimension_override=dim)
+                session.current_question = fq
+                session.fsm.apply(InterviewEvent.FOLLOW_UP_PREPARED)
+                session.memory.append_turn(
+                    TurnRecord(role="interviewer", text=fq), config=session.memory_config
+                )
+                await self._store.put(session)
+                ctx = session.fsm.context
+                msg = self._append_low_avg_hint(
+                    session,
+                    message="Follow-up question.",
+                    low_avg_count=low_avg_count,
+                    rubric=rubric,
+                )
+                return InterviewAskResponse(
+                    session_id=session_id,
+                    state=ctx.state.value,
+                    prompt_lane=prompt_lane_for_state(ctx.state),
+                    finalized=False,
+                    current_question=fq,
+                    message=msg,
+                    scores=rubric,
+                    scores_source=scores_source,
+                    evaluation_reasoning=reasoning,
+                    **self._low_avg_meta(session, count=low_avg_count),
+                )
+
+            get_metrics().inc("decision_next_question")
+            session.fsm.apply(InterviewEvent.BEGIN_PREPARE_NEXT)
+            with observe_ms("ask_next_compose"):
+                nq = await self._compose_question(session)
+            session.current_question = nq
+            session.fsm.apply(InterviewEvent.QUESTION_PREPARED)
+            session.memory.append_turn(
+                TurnRecord(role="interviewer", text=nq), config=session.memory_config
+            )
             await self._store.put(session)
             ctx = session.fsm.context
             msg = self._append_low_avg_hint(
                 session,
-                message="Follow-up question.",
+                message="Next main question.",
                 low_avg_count=low_avg_count,
                 rubric=rubric,
             )
@@ -316,39 +402,13 @@ class InterviewHttpService:
                 state=ctx.state.value,
                 prompt_lane=prompt_lane_for_state(ctx.state),
                 finalized=False,
-                current_question=fq,
+                current_question=nq,
                 message=msg,
                 scores=rubric,
                 scores_source=scores_source,
                 evaluation_reasoning=reasoning,
                 **self._low_avg_meta(session, count=low_avg_count),
             )
-
-        session.fsm.apply(InterviewEvent.BEGIN_PREPARE_NEXT)
-        nq = await self._compose_question(session)
-        session.current_question = nq
-        session.fsm.apply(InterviewEvent.QUESTION_PREPARED)
-        session.memory.append_turn(TurnRecord(role="interviewer", text=nq), config=session.memory_config)
-        await self._store.put(session)
-        ctx = session.fsm.context
-        msg = self._append_low_avg_hint(
-            session,
-            message="Next main question.",
-            low_avg_count=low_avg_count,
-            rubric=rubric,
-        )
-        return InterviewAskResponse(
-            session_id=session_id,
-            state=ctx.state.value,
-            prompt_lane=prompt_lane_for_state(ctx.state),
-            finalized=False,
-            current_question=nq,
-            message=msg,
-            scores=rubric,
-            scores_source=scores_source,
-            evaluation_reasoning=reasoning,
-            **self._low_avg_meta(session, count=low_avg_count),
-        )
 
     async def status(self, session_id: str) -> InterviewStatusResponse:
         session = await self._store.get(session_id)
@@ -364,6 +424,7 @@ class InterviewHttpService:
             current_question=session.current_question,
             memory_context_excerpt=excerpt,
             report_ready=session.llm_report is not None,
+            analytics=build_session_analytics(session),
         )
 
     async def report(self, session_id: str) -> InterviewReportResponse:
@@ -403,6 +464,20 @@ class InterviewHttpService:
         ]
         llm_on = self._orch.use_llm_scoring if use_llm_scoring is None else use_llm_scoring
         if llm_on:
+            with observe_ms("ask_score_llm"):
+                eval_result = await self._orch.score_answer(
+                    job_description=session.job_description,
+                    resume=session.resume,
+                    question=session.current_question,
+                    answer=answer,
+                    interview_language=session.interview_language,
+                    prior_rounds=prior,
+                )
+            if eval_result.key_facts:
+                session.memory.add_key_facts(eval_result.key_facts, config=session.memory_config)
+            return eval_result.to_round_scores(), "llm", eval_result.reasoning
+
+        with observe_ms("ask_score_heuristic"):
             eval_result = await self._orch.score_answer(
                 job_description=session.job_description,
                 resume=session.resume,
@@ -411,18 +486,6 @@ class InterviewHttpService:
                 interview_language=session.interview_language,
                 prior_rounds=prior,
             )
-            if eval_result.key_facts:
-                session.memory.add_key_facts(eval_result.key_facts, config=session.memory_config)
-            return eval_result.to_round_scores(), "llm", eval_result.reasoning
-
-        eval_result = await self._orch.score_answer(
-            job_description=session.job_description,
-            resume=session.resume,
-            question=session.current_question,
-            answer=answer,
-            interview_language=session.interview_language,
-            prior_rounds=prior,
-        )
         return eval_result.to_round_scores(), "heuristic", eval_result.reasoning
 
     async def _schedule_report_generation(self, session: SessionRecord) -> None:
@@ -448,14 +511,15 @@ class InterviewHttpService:
         last_exc: Exception | None = None
         for strategy in strategies:
             try:
-                result = await self._orch.compose_question(
-                    session.job_description,
-                    session.resume,
-                    dimension=focus,
-                    expected_depth=session.expected_depth,
-                    prompt_strategy=strategy,
-                    interview_language=session.interview_language,
-                )
+                with observe_ms("compose_question"):
+                    result = await self._orch.compose_question(
+                        session.job_description,
+                        session.resume,
+                        dimension=focus,
+                        expected_depth=session.expected_depth,
+                        prompt_strategy=strategy,
+                        interview_language=session.interview_language,
+                    )
                 text = result.final_question.strip()
                 if text:
                     if strategy != session.prompt_strategy:

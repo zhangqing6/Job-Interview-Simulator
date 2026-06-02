@@ -104,6 +104,10 @@ class InterviewStatusResponse(BaseModel):
     current_question: str
     memory_context_excerpt: str
     report_ready: bool = False
+    analytics: dict | None = Field(
+        default=None,
+        description="Quantitative session stats: rounds, weighted scores, terminate reason.",
+    )
 
 
 class InterviewReportResponse(BaseModel):

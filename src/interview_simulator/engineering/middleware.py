@@ -10,6 +10,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
+from interview_simulator.engineering.metrics import get_metrics
+
 logger = logging.getLogger("interview_simulator.http")
 
 
@@ -35,6 +37,8 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             raise
         else:
             duration_ms = (time.perf_counter() - start) * 1000
+            path_key = f"http_{request.method}_{request.url.path}".replace("/", "_")
+            get_metrics().record_latency(path_key, duration_ms)
             logger.info(
                 "http_request",
                 extra={

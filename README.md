@@ -216,7 +216,36 @@ docker compose up --build
 | `LOG_FORMAT` | `text`（默认）或 `json` / `jsonl` |
 | `LOG_LEVEL` | `INFO`、`DEBUG` 等 |
 
-Compose 默认 `LOG_FORMAT=json`。日志字段含 `request_id`、`duration_ms`、`audit_event`、`session_id` 等。
+Compose 默认 `LOG_FORMAT=json`。日志字段含 `request_id`、`duration_ms`、`audit_event`、`session_id`、`weighted_score` 等。
+
+#### 量化指标（已实现）
+
+| 维度 | 如何查看 | 说明 |
+|------|----------|------|
+| **延迟** | `GET /metrics` → `latencies_ms` | 按操作统计：`ask_total`、`start_compose_question`、`ask_score_llm`、`compose_question`、各 HTTP 路径 |
+| **并发** | `GET /metrics` → `active_sessions` | 当前进行中的会话数；多实例需汇总各 Pod 指标 |
+| **有效对话轮次** | `GET /interview/status/{id}` → `analytics` | `scored_rounds`（已评分回合）、`effective_dialogue_turns`（已展示题目数） |
+| **评分一致性** | `GET /metrics` → `weighted_score_distribution` | 全局加权分 min/max/mean/p50/p90；单会话见 `analytics.weighted_score_history` |
+| **面试准确率** | 需标注集 + 离线评测 | 见下「准确率与一致性评测」 |
+
+```bash
+curl http://127.0.0.1:8000/metrics
+curl http://127.0.0.1:8000/interview/status/<session_id>
+```
+
+并发/延迟冒烟（需先启动 `interview-api`）：
+
+```bash
+python scripts/benchmark_latency.py --concurrency 5
+```
+
+#### 准确率与一致性评测（建议下一步）
+
+1. **准确率**：准备 20–50 条「题目 + 标准答案要点 + 期望分数区间」JSON，跑批 `POST /interview/ask`（或固定 `scores`），对比 LLM 加权分是否落在区间内，报告 **MAE / 命中率**。
+2. **评分一致性**：同一 `(question, answer)` 重复评分 N 次，看加权分 **标准差**（目标例如 σ < 0.5）。
+3. **决策一致性**：对边界样本（加权 1.4、1.6、2.4）断言 FSM 事件为追问/换题/结束。
+
+可将上述脚本放入 `scripts/eval_scoring.py` 并纳入 CI（使用 FakeScorer 测逻辑，用 GLM 测线上抽样）。
 
 ---
 

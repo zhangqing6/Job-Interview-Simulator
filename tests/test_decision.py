@@ -30,7 +30,8 @@ def test_satisfactory_goes_next_question() -> None:
 def test_low_weighted_detection() -> None:
     assert is_low_average_round(_scores(1, 0, 1))
     assert is_low_average_round(_scores(1, 1, 1))
-    assert not is_low_average_round(_scores(1, 1, 2))
+    assert is_low_average_round(_scores(1, 1, 2))
+    assert not is_low_average_round(_scores(2, 2, 3))
     assert not is_low_average_round(_scores(2, 2, 2))
 
 

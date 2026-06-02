@@ -36,6 +36,7 @@ class StoredSession(BaseModel):
     interview_language: InterviewLanguage = "zh"
     llm_report: InterviewLLMReport | None = None
     report_pending: bool = False
+    finalize_reason: str | None = None
 
 
 def encode_session(record: SessionRecord) -> str:
@@ -55,6 +56,7 @@ def encode_session(record: SessionRecord) -> str:
         interview_language=record.interview_language,
         llm_report=record.llm_report,
         report_pending=record.report_pending,
+        finalize_reason=record.finalize_reason,
     )
     return stored.model_dump_json()
 
@@ -77,6 +79,7 @@ def decode_session(payload: str) -> SessionRecord:
         interview_language=stored.interview_language,
         llm_report=stored.llm_report,
         report_pending=stored.report_pending,
+        finalize_reason=stored.finalize_reason,
     )
 
 
