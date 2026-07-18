@@ -2,7 +2,7 @@
 
 **英文名：** Multi-Agent Job Interview Simulator with Automated Evaluation
 
-模拟真实技术面试流程：Agent 根据**职位描述**与**候选人简历**动态提问、追问，结合**结构化评分**驱动状态机分支，并输出**结构化面试报告**。支持多会话隔离（Redis）、可 Docker 部署
+模拟真实技术面试流程：Agent 根据**职位描述**与**候选人简历**动态提问、追问，结合**结构化评分**驱动状态机分支，并输出**结构化面试报告**。支持多会话隔离（Redis）、可 Docker 部署。
 
 ---
 
